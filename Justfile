@@ -621,6 +621,10 @@ mobile-check:
 mobile-test:
     unset GIT_DIR GIT_WORK_TREE; cd {{mobile_dir}} && flutter test
 
+# Upload an existing iOS archive to TestFlight with an App Store Connect API key
+mobile-testflight-upload archive:
+    ./scripts/mobile-testflight-upload.sh "{{archive}}"
+
 # Regenerate the emoji dataset asset from desktop's emoji-mart install.
 # Output is committed — rerun after bumping @emoji-mart/data.
 mobile-emoji-data:
