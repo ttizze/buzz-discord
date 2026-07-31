@@ -125,7 +125,7 @@ function CommunityButton({
               aria-current={isActive ? "true" : undefined}
               aria-label={tooltipLabel}
               className={cn(
-                "relative flex h-9 w-9 items-center justify-center touch-none outline-hidden focus:outline-none focus-visible:outline-none",
+                "group relative flex h-11 w-11 items-center justify-center touch-none outline-hidden focus:outline-none focus-visible:outline-none",
                 isDragging && "opacity-30",
               )}
               data-testid={`community-rail-button-${community.id}`}
@@ -136,7 +136,13 @@ function CommunityButton({
             >
               <span
                 className={cn(
-                  "flex h-9 w-9 items-center justify-center overflow-hidden rounded-2xl text-xs font-semibold transition-all",
+                  "absolute -left-2.5 w-1 rounded-r-full bg-sidebar-foreground transition-all",
+                  isActive ? "h-8" : "h-0 group-hover:h-5",
+                )}
+              />
+              <span
+                className={cn(
+                  "flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl text-sm font-semibold transition-all",
                   isActive
                     ? "rounded-xl bg-primary text-primary-foreground"
                     : "bg-sidebar-accent/60 text-sidebar-foreground/80 hover:rounded-xl hover:bg-primary/80 hover:text-primary-foreground",
@@ -297,7 +303,8 @@ function SortableCommunityButton({
  * `useCommunityUnread`) and switches relays on click. Right-click opens a
  * per-community menu for read state, community URL, invites, and settings.
  *
- * Hidden entirely with a single community — a rail of one adds no value.
+ * The rail stays visible with one community so the primary shell remains
+ * stable and the add-community action is always in the same place.
  */
 export function CommunityRail({
   communities,
@@ -330,7 +337,7 @@ export function CommunityRail({
     }),
   );
 
-  if (communities.length <= 1) {
+  if (communities.length === 0) {
     return null;
   }
 
@@ -370,7 +377,7 @@ export function CommunityRail({
   return (
     <nav
       aria-label="Communities"
-      className="relative z-20 flex w-14 shrink-0 flex-col items-center gap-2 overflow-y-auto bg-sidebar px-2.5 pb-5 pt-[calc(var(--buzz-top-chrome-height,40px)+7px)]"
+      className="relative z-20 flex w-16 shrink-0 flex-col items-center gap-2 overflow-y-auto border-r border-sidebar-border/70 bg-sidebar-accent/30 px-2.5 pb-5 pt-[calc(var(--buzz-top-chrome-height,40px)+7px)]"
       data-testid="community-rail"
     >
       <DndContext
@@ -412,7 +419,7 @@ export function CommunityRail({
         <TooltipTrigger asChild>
           <button
             aria-label="Add community"
-            className="flex h-9 w-9 items-center justify-center rounded-2xl bg-sidebar-accent/60 text-sidebar-foreground/70 outline-hidden transition-all hover:rounded-xl hover:bg-primary/80 hover:text-primary-foreground focus:outline-none focus-visible:outline-none"
+            className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sidebar-accent/80 text-sidebar-foreground/70 outline-hidden transition-all hover:rounded-xl hover:bg-primary/80 hover:text-primary-foreground focus:outline-none focus-visible:outline-none"
             data-testid="community-rail-add"
             onClick={onAddCommunity}
             type="button"

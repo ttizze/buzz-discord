@@ -108,7 +108,7 @@ export function AppShell() {
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
   const communitiesHook = useCommunities();
-  const hasCommunityRail = communitiesHook.communities.length > 1;
+  const hasCommunityRail = communitiesHook.communities.length > 0;
   const addCommunityDialog = useAddCommunityDialogState();
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);

@@ -44,6 +44,7 @@ import {
   SectionQuickAction,
 } from "@/features/sidebar/ui/CustomChannelSection";
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
+import { DiscordCommunityHeader } from "@/features/sidebar/ui/DiscordCommunityHeader";
 import { SidebarProfileCard } from "@/features/sidebar/ui/SidebarProfileCard";
 import { SidebarRelayConnectionCard } from "@/features/sidebar/ui/SidebarRelayConnectionCard";
 import type { useSidebarRelayConnectionCard } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
@@ -563,11 +564,12 @@ export function AppSidebar({
     >
       <div
         className={`relative flex min-h-0 flex-1 flex-col overflow-hidden ${
-          communities.length > 1 ? "md:-ml-[11px] md:w-[calc(100%+11px)]" : ""
+          communities.length > 0 ? "md:-ml-[11px] md:w-[calc(100%+11px)]" : ""
         }`}
         data-sidebar-background
         data-testid="app-sidebar-scroll-anchor"
       >
+        <DiscordCommunityHeader community={activeCommunity} />
         <AppSidebarPinnedHeader
           channelLabels={dmChannelLabels}
           currentPubkey={currentPubkey}
