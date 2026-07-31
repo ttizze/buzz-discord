@@ -549,9 +549,9 @@ test("settings content uses the same inset surface as the main app", async ({
     throw new Error("Settings layout is missing");
   }
 
-  // The Discord shell adds one 48px server header above sidebar search.
+  // The Discord shell adds one 52px server header above sidebar search.
   // Settings intentionally omits that server-specific row.
-  expect(searchBox.y - backToAppBox.y).toBe(48);
+  expect(searchBox.y - backToAppBox.y).toBe(52);
 
   // Match the normal app shell: a fixed 40px top chrome strip, then a 1px
   // top/left inset and 8px right/bottom inset around the rounded content card.
