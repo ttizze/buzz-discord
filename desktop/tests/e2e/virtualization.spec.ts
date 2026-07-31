@@ -31,13 +31,16 @@ async function seedChannelSections(page: Page) {
 // pointer down, past the activation threshold, onto the target, then releases —
 // the sequence dnd-kit needs to fire onDragEnd and commit the reorder.
 async function dragOver(page: Page, source: Locator, target: Locator) {
+  await source.scrollIntoViewIfNeeded();
   const from = await source.boundingBox();
   const to = await target.boundingBox();
   if (!from || !to) throw new Error("drag handles not laid out");
+  const targetY =
+    from.y < to.y ? to.y + to.height - 2 : to.y + Math.min(2, to.height);
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 10);
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+  await page.mouse.move(to.x + to.width / 2, targetY, {
     steps: 10,
   });
   await page.mouse.up();
@@ -157,7 +160,9 @@ test.describe("list virtualization", () => {
     // the row itself is the handle. Scoping to that attribute reads the live
     // section order and excludes the inner disclosure button and the (hidden)
     // assign-to-section context-menu items that reuse the same names.
-    const headers = page.locator('[aria-roledescription="sortable"]');
+    const headers = page
+      .locator('[aria-roledescription="sortable"]')
+      .filter({ has: page.locator("[data-sidebar-section-title]") });
     const topHeader = headers.filter({ hasText: "Priority" });
     const bottomHeader = headers.filter({ hasText: "Archive" });
     await expect(topHeader).toBeVisible();

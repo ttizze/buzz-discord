@@ -7,7 +7,7 @@ export function DiscordCommunityHeader({
 }) {
   return (
     <div
-      className="mx-[3px] flex h-12 shrink-0 items-center border-b border-sidebar-border/70 px-3"
+      className="mx-[3px] flex h-13 shrink-0 items-center border-b border-sidebar-border/70 px-3"
       data-testid="discord-community-header"
     >
       <div className="min-w-0">
