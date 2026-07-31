@@ -50,6 +50,7 @@ export type ChannelPaneProps = {
   historyExhausted?: boolean;
   isFetchingOlder?: boolean;
   isJoining?: boolean;
+  membersSidebarOpen?: boolean;
   isSinglePanelView?: boolean;
   isSending: boolean;
   isTimelineLoading: boolean;

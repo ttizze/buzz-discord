@@ -1,9 +1,10 @@
-import { Bot, Crown, UsersRound } from "lucide-react";
+import { Bot, Crown, ShieldCheck, UsersRound } from "lucide-react";
 import * as React from "react";
 
 import { useChannelMembersQuery } from "@/features/channels/hooks";
 import { useClassifiedMembers } from "@/features/channels/lib/useClassifiedMembers";
 import { formatMemberName } from "@/features/channels/lib/memberUtils";
+import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { usePresenceQuery } from "@/features/presence/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import type {
@@ -33,6 +34,7 @@ function MemberRow({
   member,
   profile,
   status,
+  working,
 }: {
   currentPubkey?: string;
   isAgent: boolean;
@@ -42,6 +44,7 @@ function MemberRow({
     displayName: string | null;
   } | null;
   status: PresenceStatus;
+  working: boolean;
 }) {
   const displayName =
     profile?.displayName?.trim() ||
@@ -53,7 +56,7 @@ function MemberRow({
       className={cn(
         "group flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-sidebar-foreground/75 transition-colors",
         "hover:bg-sidebar-accent hover:text-sidebar-foreground",
-        status === "offline" && "opacity-55 hover:opacity-100",
+        status === "offline" && !working && "opacity-55 hover:opacity-100",
       )}
       data-testid={`discord-member-${member.pubkey}`}
     >
@@ -67,7 +70,7 @@ function MemberRow({
           aria-hidden="true"
           className={cn(
             "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-sidebar",
-            presenceDotClass(status),
+            working ? "animate-pulse bg-violet-500" : presenceDotClass(status),
           )}
         />
         <span className="sr-only">{status}</span>
@@ -80,12 +83,32 @@ function MemberRow({
               aria-label="Owner"
               className="h-3 w-3 shrink-0 text-amber-500"
             />
+          ) : member.role === "admin" ? (
+            <ShieldCheck
+              aria-label="Admin"
+              className="h-3 w-3 shrink-0 text-sky-500"
+            />
           ) : null}
         </div>
         {isAgent ? (
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Bot className="h-3 w-3" />
-            <span>Agent</span>
+          <div
+            className={cn(
+              "flex items-center gap-1 text-xs text-muted-foreground",
+              working && "font-medium text-violet-500",
+            )}
+          >
+            <Bot className={cn("h-3 w-3", working && "animate-pulse")} />
+            <span>
+              {working
+                ? "Working now"
+                : status === "offline"
+                  ? "Offline"
+                  : "Ready"}
+            </span>
+          </div>
+        ) : member.role === "owner" || member.role === "admin" ? (
+          <div className="text-xs capitalize text-muted-foreground">
+            {member.role}
           </div>
         ) : null}
       </div>
@@ -100,6 +123,7 @@ function MemberGroup({
   members,
   presence,
   profiles,
+  workingAgentPubkeys,
 }: {
   currentPubkey?: string;
   isAgent: boolean;
@@ -115,6 +139,7 @@ function MemberGroup({
         }
       >
     | undefined;
+  workingAgentPubkeys: ReadonlySet<string>;
 }) {
   if (members.length === 0) return null;
 
@@ -134,6 +159,7 @@ function MemberGroup({
               member={member}
               profile={profiles?.[pubkey] ?? null}
               status={presence?.[pubkey] ?? "offline"}
+              working={isAgent && workingAgentPubkeys.has(pubkey)}
             />
           );
         })}
@@ -150,29 +176,48 @@ export function DiscordMembersRail({
   const membersQuery = useChannelMembersQuery(channel?.id ?? null);
   const members = membersQuery.data ?? [];
   const { bots, people } = useClassifiedMembers(members, currentPubkey);
+  const workingAgentPubkeys = useChannelWorkingAgentPubkeys(channel?.id);
+  const workingAgentPubkeySet = React.useMemo(
+    () => new Set(workingAgentPubkeys),
+    [workingAgentPubkeys],
+  );
   const pubkeys = React.useMemo(
     () => members.map((member) => member.pubkey),
     [members],
   );
   const profilesQuery = useUsersBatchQuery(pubkeys);
   const presenceQuery = usePresenceQuery(pubkeys);
-  const onlinePeople = React.useMemo(
+  const admins = React.useMemo(
     () =>
       people.filter(
+        (member) => member.role === "owner" || member.role === "admin",
+      ),
+    [people],
+  );
+  const regularPeople = React.useMemo(
+    () =>
+      people.filter(
+        (member) => member.role !== "owner" && member.role !== "admin",
+      ),
+    [people],
+  );
+  const onlinePeople = React.useMemo(
+    () =>
+      regularPeople.filter(
         (member) =>
           (presenceQuery.data?.[normalizePubkey(member.pubkey)] ??
             "offline") !== "offline",
       ),
-    [people, presenceQuery.data],
+    [regularPeople, presenceQuery.data],
   );
   const offlinePeople = React.useMemo(
     () =>
-      people.filter(
+      regularPeople.filter(
         (member) =>
           (presenceQuery.data?.[normalizePubkey(member.pubkey)] ??
             "offline") === "offline",
       ),
-    [people, presenceQuery.data],
+    [regularPeople, presenceQuery.data],
   );
 
   if (!channel || !onOpenMembers) return null;
@@ -193,7 +238,7 @@ export function DiscordMembersRail({
             Members
           </span>
           <span className="block text-xs text-muted-foreground">
-            People and agents
+            Manage people and roles
           </span>
         </span>
         <UsersRound className="h-4 w-4 text-muted-foreground" />
@@ -218,6 +263,16 @@ export function DiscordMembersRail({
               members={bots}
               presence={presenceQuery.data}
               profiles={profilesQuery.data?.profiles}
+              workingAgentPubkeys={workingAgentPubkeySet}
+            />
+            <MemberGroup
+              currentPubkey={currentPubkey}
+              isAgent={false}
+              label="Admins"
+              members={admins}
+              presence={presenceQuery.data}
+              profiles={profilesQuery.data?.profiles}
+              workingAgentPubkeys={workingAgentPubkeySet}
             />
             <MemberGroup
               currentPubkey={currentPubkey}
@@ -226,6 +281,7 @@ export function DiscordMembersRail({
               members={onlinePeople}
               presence={presenceQuery.data}
               profiles={profilesQuery.data?.profiles}
+              workingAgentPubkeys={workingAgentPubkeySet}
             />
             <MemberGroup
               currentPubkey={currentPubkey}
@@ -234,6 +290,7 @@ export function DiscordMembersRail({
               members={offlinePeople}
               presence={presenceQuery.data}
               profiles={profilesQuery.data?.profiles}
+              workingAgentPubkeys={workingAgentPubkeySet}
             />
           </>
         )}

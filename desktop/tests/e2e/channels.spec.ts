@@ -2525,7 +2525,8 @@ test("manage channel keeps canvas near the top of the sheet", async ({
   if (!narrowSheetBox) {
     throw new Error("Expected narrow channel management panel box.");
   }
-  expect(narrowSheetBox.width).toBeGreaterThan(500);
+  // Keep the management panel usable beside the 64px Discord server rail.
+  expect(narrowSheetBox.width).toBeGreaterThan(400);
   expect(canvasBox).not.toBeNull();
   expect(nameBox).not.toBeNull();
   expect(canvasBox?.y).toBeLessThan(nameBox?.y);

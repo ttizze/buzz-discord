@@ -602,15 +602,18 @@ test.describe("community rail", () => {
     await expect(buttonB).toHaveAttribute("aria-current", "true");
   });
 
-  test("hides the rail with a single community", async ({ page }) => {
+  test("keeps the server rail and add action with a single community", async ({
+    page,
+  }) => {
     await installMockBridge(page, undefined, { skipCommunitySeed: true });
     await seedCommunities(page, [COMMUNITY_A], COMMUNITY_A.id);
     await page.goto("/");
 
-    // The channel sidebar still renders; the rail is omitted (a rail of one
-    // adds nothing).
+    // The Discord shell keeps its server rail stable and leaves server creation
+    // in the same place even before a second community is added.
     await expect(page.getByTestId("app-sidebar")).toBeVisible();
-    await expect(page.getByTestId("community-rail")).toHaveCount(0);
+    await expect(page.getByTestId("community-rail")).toBeVisible();
+    await expect(page.getByTestId("community-rail-add")).toBeVisible();
   });
 
   test("keeps the rail visible when the sidebar is collapsed", async ({
@@ -695,11 +698,12 @@ test.describe("community rail", () => {
       (railBox?.x ?? 0) +
       (railBox?.width ?? 0) -
       ((buttonBox?.x ?? 0) + (buttonBox?.width ?? 0));
-    expect(Math.abs(leftInset - 10)).toBeLessThan(0.5);
-    expect(Math.abs(leftInset - rightInset)).toBeLessThan(0.5);
+    expect(Math.abs(leftInset - 10)).toBeLessThanOrEqual(0.5);
+    // The rail's 1px right border belongs to the visible gap.
+    expect(Math.abs(leftInset - rightInset)).toBeLessThanOrEqual(1);
     const visibleRightGap =
       (searchBox?.x ?? 0) - ((buttonBox?.x ?? 0) + (buttonBox?.width ?? 0));
-    expect(Math.abs(leftInset - visibleRightGap)).toBeLessThan(0.5);
+    expect(Math.abs(leftInset - visibleRightGap)).toBeLessThanOrEqual(1);
 
     // With the rail visible, the top-chrome controls (sidebar toggle, back/
     // forward) sit just past the traffic lights near the rail edge — not
@@ -827,6 +831,7 @@ test.describe("community rail", () => {
         }),
       );
     }, `community-rail-button-${COMMUNITY_B.id}`);
+    await expect(buttonB).toHaveAttribute("aria-pressed", "true");
     // ArrowUp moves the active item one slot up.
     await page.keyboard.press("ArrowUp");
     // Space drops the item — same synthetic dispatch for consistency.

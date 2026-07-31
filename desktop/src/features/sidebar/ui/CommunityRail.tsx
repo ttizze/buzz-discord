@@ -376,7 +376,7 @@ export function CommunityRail({
 
   return (
     <nav
-      aria-label="Communities"
+      aria-label="Servers"
       className="relative z-20 flex w-16 shrink-0 flex-col items-center gap-2 overflow-y-auto border-r border-sidebar-border/70 bg-sidebar-accent/30 px-2.5 pb-5 pt-[calc(var(--buzz-top-chrome-height,40px)+7px)]"
       data-testid="community-rail"
     >
@@ -418,7 +418,7 @@ export function CommunityRail({
       <Tooltip>
         <TooltipTrigger asChild>
           <button
-            aria-label="Add community"
+            aria-label="Add server"
             className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sidebar-accent/80 text-sidebar-foreground/70 outline-hidden transition-all hover:rounded-xl hover:bg-primary/80 hover:text-primary-foreground focus:outline-none focus-visible:outline-none"
             data-testid="community-rail-add"
             onClick={onAddCommunity}
@@ -427,7 +427,7 @@ export function CommunityRail({
             <Plus className="h-4 w-4" />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="right">Add community</TooltipContent>
+        <TooltipContent side="right">Add server</TooltipContent>
       </Tooltip>
       <EditCommunityDialog
         canRemove={communities.length > 1}

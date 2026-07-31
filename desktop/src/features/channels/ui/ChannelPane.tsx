@@ -96,6 +96,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   welcomeKickoffStage = null,
   welcomeKickoffSettingUp = false,
   messages,
+  membersSidebarOpen = false,
   threadSummaries,
   firstUnreadMessageId = null,
   unreadCount = 0,
@@ -811,15 +812,15 @@ export const ChannelPane = React.memo(function ChannelPane({
           ) : null}
         </section>
       ) : null}
-
       <DiscordMembersRail
         channel={
-          !isSinglePanelView && !hasSplitAuxiliaryPane ? activeChannel : null
+          !isSinglePanelView && !hasSplitAuxiliaryPane && !membersSidebarOpen
+            ? activeChannel
+            : null
         }
         currentPubkey={currentPubkey}
         onOpenMembers={onOpenMembers}
       />
-
       {/*
        * `AnimatePresence` keeps the focus thread drawer mounted through its exit
        * animation — without it the drawer's own existence condition

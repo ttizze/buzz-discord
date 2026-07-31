@@ -898,6 +898,7 @@ export function ChannelScreen({
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
                   messages={timelineMessages}
+                  membersSidebarOpen={isMembersSidebarOpen}
                   threadSummaries={threadSummaries}
                   onCancelEdit={handleCancelEdit}
                   onCancelThreadReply={handleCancelThreadReply}

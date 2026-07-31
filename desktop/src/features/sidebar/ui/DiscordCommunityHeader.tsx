@@ -14,7 +14,7 @@ export function DiscordCommunityHeader({
         <div className="truncate text-sm font-semibold text-sidebar-foreground">
           {community?.name ?? "Buzz"}
         </div>
-        <div className="text-xs text-muted-foreground">Community</div>
+        <div className="text-xs text-muted-foreground">Server</div>
       </div>
     </div>
   );
