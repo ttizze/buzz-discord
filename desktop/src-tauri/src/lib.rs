@@ -181,7 +181,7 @@ pub fn run() {
             }
             // Forward any deep link URLs from the duplicate launch.
             for arg in &argv {
-                if arg.starts_with("buzz://") {
+                if arg.starts_with("buzzcord://") || arg.starts_with("buzz://") {
                     handle_deep_link_url(app, arg);
                 }
             }

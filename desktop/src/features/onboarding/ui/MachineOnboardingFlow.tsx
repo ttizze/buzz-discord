@@ -211,11 +211,16 @@ export function MachineOnboardingFlow({
               effect="mask-reveal-up"
               transitionKey="machine-identity"
             >
-              <img
-                alt="Buzz"
-                className="w-full max-w-[600px]"
-                src="/landing/buzz-wordmark.png"
-              />
+              <div className="flex items-center justify-center gap-5">
+                <img
+                  alt="Buzzcord"
+                  className="h-28 w-28 rounded-[22.37%]"
+                  src="/app-icon@2x.png"
+                />
+                <span className="text-7xl font-bold tracking-tight text-foreground">
+                  Buzzcord
+                </span>
+              </div>
               <p className="mt-2 max-w-[560px] text-center text-2xl font-normal leading-none text-foreground">
                 Your people, your agents, your projects —<br />
                 all in one place.
