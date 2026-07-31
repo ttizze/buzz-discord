@@ -12,7 +12,7 @@ use buzz_core::kind::{
 };
 use buzz_core::observer::{
     content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
-    OBSERVER_FRAME_TELEMETRY,
+    OBSERVER_FRAME_TELEMETRY, OBSERVER_OWNER_TAG,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
@@ -906,6 +906,7 @@ enum AgentObserverDirection {
 struct AgentObserverRoute {
     agent: PublicKey,
     owner: PublicKey,
+    recipient: PublicKey,
     direction: AgentObserverDirection,
 }
 
@@ -938,8 +939,10 @@ fn observer_frame_rate_limited(
 /// Handle encrypted agent observer frames (kind 24200).
 ///
 /// These frames bypass storage and are routed as global ephemeral events. The
-/// relay gates publication by the existing `agent_owner_pubkey` mapping and
-/// gates subscription in the REQ handler via the cleartext `p` tag.
+/// relay gates publication by the existing `agent_owner_pubkey` mapping. A
+/// telemetry frame may carry a separate `observer_owner` tag so an owner can
+/// delegate encrypted read access to another identity without delegating agent
+/// control. Subscriptions remain gated by the cleartext recipient `p` tag.
 async fn handle_agent_observer_event(
     event: Event,
     conn_id: uuid::Uuid,
@@ -1083,6 +1086,7 @@ async fn handle_agent_observer_event(
         event_id = %event_id_hex,
         agent = %route.agent.to_hex(),
         owner = %route.owner.to_hex(),
+        recipient = %route.recipient.to_hex(),
         direction = ?route.direction,
         "Agent observer fan-out"
     );
@@ -1101,8 +1105,9 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
     let frame = single_tag_content(event, OBSERVER_FRAME_TAG)?;
 
     let (owner, direction, expected_frame) = if event.pubkey == agent && recipient != agent {
+        let owner = optional_single_pubkey_tag(event, OBSERVER_OWNER_TAG)?.unwrap_or(recipient);
         (
-            recipient,
+            owner,
             AgentObserverDirection::Telemetry,
             OBSERVER_FRAME_TELEMETRY,
         )
@@ -1127,6 +1132,7 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
     Ok(Some(AgentObserverRoute {
         agent,
         owner,
+        recipient,
         direction,
     }))
 }
@@ -1134,6 +1140,25 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
 fn parse_single_pubkey_tag(event: &Event, tag_name: &str) -> Result<PublicKey, String> {
     let value = single_tag_content(event, tag_name)?;
     PublicKey::from_hex(value)
+        .map_err(|_| format!("invalid: observer {tag_name} tag must be a hex pubkey"))
+}
+
+fn optional_single_pubkey_tag(event: &Event, tag_name: &str) -> Result<Option<PublicKey>, String> {
+    let mut values = event
+        .tags
+        .iter()
+        .filter(|tag| tag.kind().to_string() == tag_name)
+        .filter_map(|tag| tag.content());
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(format!(
+            "invalid: observer frame has multiple {tag_name} tags"
+        ));
+    }
+    PublicKey::from_hex(value)
+        .map(Some)
         .map_err(|_| format!("invalid: observer {tag_name} tag must be a hex pubkey"))
 }
 
@@ -1166,7 +1191,7 @@ mod tests {
     };
     use buzz_core::observer::{
         encrypt_observer_payload, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
-        OBSERVER_FRAME_TELEMETRY,
+        OBSERVER_FRAME_TELEMETRY, OBSERVER_OWNER_TAG,
     };
     use nostr::{EventBuilder, Keys, Kind, Tag};
     use tokio::sync::{mpsc, Mutex, RwLock};
@@ -1262,6 +1287,38 @@ mod tests {
             .expect("route should be Some");
         assert_eq!(route.agent, agent.public_key());
         assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, owner.public_key());
+        assert_eq!(route.direction, super::AgentObserverDirection::Telemetry);
+    }
+
+    #[test]
+    fn agent_observer_route_accepts_delegated_telemetry_recipient() {
+        let agent = Keys::generate();
+        let owner = Keys::generate();
+        let recipient = Keys::generate();
+        let encrypted = encrypt_observer_payload(
+            &agent,
+            &recipient.public_key(),
+            &serde_json::json!({"type": "acp_read"}),
+        )
+        .expect("encrypt observer payload");
+        let event = EventBuilder::new(Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16), encrypted)
+            .tags([
+                Tag::parse(["p", &recipient.public_key().to_hex()]).expect("p tag"),
+                Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+                Tag::parse([OBSERVER_OWNER_TAG, &owner.public_key().to_hex()])
+                    .expect("observer owner tag"),
+                Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
+            ])
+            .sign_with_keys(&agent)
+            .expect("sign event");
+
+        let route = super::agent_observer_route(&event)
+            .expect("observer route")
+            .expect("route should be Some");
+        assert_eq!(route.agent, agent.public_key());
+        assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, recipient.public_key());
         assert_eq!(route.direction, super::AgentObserverDirection::Telemetry);
     }
 
@@ -1289,6 +1346,7 @@ mod tests {
             .expect("route should be Some");
         assert_eq!(route.agent, agent.public_key());
         assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, agent.public_key());
         assert_eq!(route.direction, super::AgentObserverDirection::Control);
     }
 

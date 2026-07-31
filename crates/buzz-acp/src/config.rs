@@ -474,6 +474,12 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RELAY_OBSERVER", default_value_t = false)]
     pub relay_observer: bool,
 
+    /// Pubkey that receives encrypted observer telemetry. Defaults to the
+    /// agent owner when omitted. This can point at a paired mobile identity
+    /// without granting that identity owner control over the agent.
+    #[arg(long, env = "BUZZ_ACP_RELAY_OBSERVER_RECIPIENT")]
+    pub relay_observer_recipient: Option<String>,
+
     /// Connect and subscribe before starting the ACP/LLM subprocess pool.
     #[arg(long, env = "BUZZ_ACP_LAZY_POOL", default_value_t = false)]
     pub lazy_pool: bool,
@@ -550,6 +556,9 @@ pub struct Config {
     pub has_generated_codex_config: bool,
     /// Whether to publish encrypted observer frames through the relay.
     pub relay_observer: bool,
+    /// Pubkey that receives encrypted observer telemetry. `None` falls back to
+    /// the resolved agent owner.
+    pub relay_observer_recipient: Option<String>,
     /// Whether ACP/LLM subprocess initialization is deferred until accepted work arrives.
     pub lazy_pool: bool,
     /// Agent owner pubkey (hex). Used for `--respond-to=owner-only` gate.
@@ -625,18 +634,22 @@ pub(crate) fn compose_session_title(agent: &str, channel_name: Option<&str>) -> 
     format!("{agent}{SESSION_TITLE_SEPARATOR}#{channel}")
 }
 
+/// Validate one Nostr public key and normalize it to lowercase hex.
+fn validate_pubkey(entry: &str, option_name: &str) -> Result<String, ConfigError> {
+    let trimmed = entry.trim().to_ascii_lowercase();
+    if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ConfigError::ConfigFile(format!(
+            "invalid pubkey in {option_name}: '{entry}' (must be exactly 64 hex characters)"
+        )));
+    }
+    Ok(trimmed)
+}
+
 /// Validate and deduplicate allowlist entries: each must be exactly 64 hex chars.
 fn validate_allowlist(entries: &[String]) -> Result<HashSet<String>, ConfigError> {
     let mut validated = HashSet::new();
     for entry in entries {
-        let trimmed = entry.trim().to_ascii_lowercase();
-        if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(ConfigError::ConfigFile(format!(
-                "invalid pubkey in --respond-to-allowlist: '{entry}' \
-                 (must be exactly 64 hex characters)"
-            )));
-        }
-        validated.insert(trimmed);
+        validated.insert(validate_pubkey(entry, "--respond-to-allowlist")?);
     }
     Ok(validated)
 }
@@ -1053,6 +1066,12 @@ impl Config {
 
         validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
 
+        let relay_observer_recipient = args
+            .relay_observer_recipient
+            .as_deref()
+            .map(|entry| validate_pubkey(entry, "--relay-observer-recipient"))
+            .transpose()?;
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
@@ -1098,6 +1117,7 @@ impl Config {
             persona_env_vars,
             has_generated_codex_config,
             relay_observer: args.relay_observer,
+            relay_observer_recipient,
             lazy_pool: args.lazy_pool,
             agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
             no_base_prompt: args.no_base_prompt,
@@ -1468,6 +1488,7 @@ mod tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_observer_recipient: None,
             lazy_pool: false,
             agent_owner: None,
             no_base_prompt: false,
@@ -2524,6 +2545,22 @@ channels = "ALL"
     fn test_validate_allowlist_empty_is_ok() {
         let result = validate_allowlist(&[]).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_validate_observer_recipient_normalizes_pubkey() {
+        let result = validate_pubkey(
+            &format!("  {}  ", "AB".repeat(32)),
+            "--relay-observer-recipient",
+        )
+        .unwrap();
+        assert_eq!(result, "ab".repeat(32));
+    }
+
+    #[test]
+    fn test_validate_observer_recipient_rejects_invalid_pubkey() {
+        let err = validate_pubkey("not-a-pubkey", "--relay-observer-recipient").unwrap_err();
+        assert!(err.to_string().contains("--relay-observer-recipient"));
     }
 
     // ── Multiple-event-handling validation + default ──────────────────────────

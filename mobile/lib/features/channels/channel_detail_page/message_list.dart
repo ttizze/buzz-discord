@@ -3,6 +3,7 @@ part of '../channel_detail_page.dart';
 class _MessageList extends HookConsumerWidget {
   final List<MainTimelineEntry> entries;
   final List<TimelineMessage> allMessages;
+  final List<StreamingAgentMessage> streamingMessages;
   final String? initialMessageId;
   final String? initialThreadRootId;
   final String channelId;
@@ -14,6 +15,7 @@ class _MessageList extends HookConsumerWidget {
   const _MessageList({
     required this.entries,
     required this.allMessages,
+    required this.streamingMessages,
     required this.initialMessageId,
     required this.initialThreadRootId,
     required this.channelId,
@@ -36,6 +38,11 @@ class _MessageList extends HookConsumerWidget {
     );
     final isAutoScrolling = useRef(false);
     final autoScrollScheduled = useRef(false);
+    final streamRevision = Object.hashAll(
+      streamingMessages.map(
+        (message) => Object.hash(message.turnId, message.text),
+      ),
+    );
     final latestEntryId = entries.isEmpty ? null : entries.last.message.id;
     final previousLatestEntryId = useRef<String?>(null);
     final didOpenInitialThread = useRef(false);
@@ -48,7 +55,10 @@ class _MessageList extends HookConsumerWidget {
       );
       return chronologicalIndex < 0
           ? null
-          : displayEntries.length - 1 - chronologicalIndex;
+          : streamingMessages.length +
+                displayEntries.length -
+                1 -
+                chronologicalIndex;
     }
 
     Future<void> scrollToLatest() async {
@@ -92,41 +102,55 @@ class _MessageList extends HookConsumerWidget {
       );
     }
 
-    useEffect(() {
-      void onPositionsChanged() {
-        final positions = itemPositionsListener.itemPositions.value;
-        if (positions.isEmpty) return;
-        final nextIsAtLatest = latestIsAtBoundary();
-        if (nextIsAtLatest) {
-          if (!isAtLatest.value) isAtLatest.value = true;
-        } else if (followsLatest.value && !hasUserScrolled.value) {
-          // The viewport can shrink when the composer or keyboard opens.
-          // Preserve auto-follow until the user scrolls the timeline.
-          if (!isAtLatest.value) isAtLatest.value = true;
-          scheduleAutoScrollToLatest();
-        } else if (isAtLatest.value) {
-          isAtLatest.value = false;
+    useEffect(
+      () {
+        void onPositionsChanged() {
+          final positions = itemPositionsListener.itemPositions.value;
+          if (positions.isEmpty) return;
+          final nextIsAtLatest = latestIsAtBoundary();
+          if (nextIsAtLatest) {
+            if (!isAtLatest.value) isAtLatest.value = true;
+          } else if (followsLatest.value && !hasUserScrolled.value) {
+            // The viewport can shrink when the composer or keyboard opens.
+            // Preserve auto-follow until the user scrolls the timeline.
+            if (!isAtLatest.value) isAtLatest.value = true;
+            scheduleAutoScrollToLatest();
+          } else if (isAtLatest.value) {
+            isAtLatest.value = false;
+          }
+
+          final oldestVisible = positions
+              .map((position) => position.index)
+              .reduce((a, b) => a > b ? a : b);
+          final oldestTimelineVisible =
+              oldestVisible - streamingMessages.length;
+          if (!hasUserScrolled.value ||
+              oldestTimelineVisible < displayEntries.length - 3 ||
+              isLoadingOlder.value) {
+            return;
+          }
+          final notifier = ref.read(
+            channelMessagesProvider(channelId).notifier,
+          );
+          if (notifier.reachedOldest) return;
+          isLoadingOlder.value = true;
+          notifier.fetchOlder().whenComplete(
+            () => isLoadingOlder.value = false,
+          );
         }
 
-        final oldestVisible = positions
-            .map((position) => position.index)
-            .reduce((a, b) => a > b ? a : b);
-        if (!hasUserScrolled.value ||
-            oldestVisible < displayEntries.length - 3 ||
-            isLoadingOlder.value) {
-          return;
-        }
-        final notifier = ref.read(channelMessagesProvider(channelId).notifier);
-        if (notifier.reachedOldest) return;
-        isLoadingOlder.value = true;
-        notifier.fetchOlder().whenComplete(() => isLoadingOlder.value = false);
-      }
-
-      itemPositionsListener.itemPositions.addListener(onPositionsChanged);
-      return () => itemPositionsListener.itemPositions.removeListener(
-        onPositionsChanged,
-      );
-    }, [channelId, entries.length, itemPositionsListener]);
+        itemPositionsListener.itemPositions.addListener(onPositionsChanged);
+        return () => itemPositionsListener.itemPositions.removeListener(
+          onPositionsChanged,
+        );
+      },
+      [
+        channelId,
+        entries.length,
+        streamingMessages.length,
+        itemPositionsListener,
+      ],
+    );
 
     useEffect(() {
       if (initialThreadRootId == null || didOpenInitialThread.value) {
@@ -189,7 +213,13 @@ class _MessageList extends HookConsumerWidget {
       return null;
     }, [latestEntryId]);
 
-    if (entries.isEmpty) {
+    useEffect(() {
+      if (streamingMessages.isEmpty || !isAtLatest.value) return null;
+      scheduleAutoScrollToLatest();
+      return null;
+    }, [streamRevision]);
+
+    if (entries.isEmpty && streamingMessages.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -261,10 +291,25 @@ class _MessageList extends HookConsumerWidget {
                 ),
                 bottom: 0,
               ),
-              itemCount: displayEntries.length + (isLoadingOlder.value ? 1 : 0),
+              itemCount:
+                  streamingMessages.length +
+                  displayEntries.length +
+                  (isLoadingOlder.value ? 1 : 0),
               itemBuilder: (context, index) {
+                if (index < streamingMessages.length) {
+                  final streamIndex = streamingMessages.length - 1 - index;
+                  return Padding(
+                    padding: EdgeInsets.only(bottom: index == 0 ? Grid.xs : 0),
+                    child: _StreamingMessageBubble(
+                      message: streamingMessages[streamIndex],
+                      channelNames: channelNamesMap,
+                      currentChannelId: channelId,
+                    ),
+                  );
+                }
+
                 // Loading indicator at the top (last index in reversed list).
-                if (index >= displayEntries.length) {
+                if (index >= streamingMessages.length + displayEntries.length) {
                   return const Padding(
                     padding: EdgeInsets.symmetric(vertical: Grid.xs),
                     child: Center(
@@ -277,7 +322,8 @@ class _MessageList extends HookConsumerWidget {
                 }
 
                 // Reversed list: index 0 = newest (bottom of screen).
-                final chronIdx = displayEntries.length - 1 - index;
+                final timelineIndex = index - streamingMessages.length;
+                final chronIdx = displayEntries.length - 1 - timelineIndex;
                 final entryGroup = displayEntries[chronIdx];
                 final entry = entryGroup.first;
                 final message = entry.message;
