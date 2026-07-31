@@ -293,7 +293,7 @@ if (assert_no_removed_mobile_release_behavior "$tmp/forbidden-mobile-release-beh
     >/dev/null 2>&1; then
   fail "removed-behavior assertion did not reject a forbidden GitHub Release call"
 fi
-grep -Fq 'version: 0.0.0+1' "$repo_root/mobile/pubspec.yaml"
+grep -Fq 'version: 1.0.0+1' "$repo_root/mobile/pubspec.yaml"
 if grep -qE 'release-mobile|bump-mobile-version|get-current-mobile-version' "$repo_root/Justfile"; then
   fail "metadata-only mobile release recipe remains in Justfile"
 fi
