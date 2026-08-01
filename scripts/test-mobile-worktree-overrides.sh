@@ -63,10 +63,10 @@ out="$("$wt/scripts/mobile-worktree-overrides.sh")"
 ios="$wt/mobile/ios/Flutter/WorktreeOverrides.xcconfig"
 android="$wt/mobile/android/worktree.properties"
 [[ -f "$ios" && -f "$android" ]] || fail "worktree must write both override files"
-grep -q '^BUNDLE_IDENTIFIER = com\.buzz\.buzzMobile\.feature-work-1$' "$ios" \
+grep -q '^BUNDLE_IDENTIFIER = com\.ttizze\.buzzDiscord\.dev\.feature-work-1$' "$ios" \
   && pass "iOS bundle identifier keys to the sanitized worktree directory name" \
   || fail "iOS bundle identifier must key to the worktree dir, got: $(cat "$ios")"
-grep -q '^APP_DISPLAY_NAME = Buzz (Fix_Thing-2)$' "$ios" \
+grep -q '^APP_DISPLAY_NAME = Buzzcord (Fix_Thing-2)$' "$ios" \
   && pass "iOS display name carries the branch label" \
   || fail "iOS display name wrong: $(cat "$ios")"
 grep -q '^label=Fix_Thing-2$' "$android" \
@@ -82,7 +82,7 @@ printf '%s' "$out" | grep -q 'Worktree Feature_Work-1' \
 # ── Branch switch in the same worktree: identity stable, label follows ───────
 git -C "$wt" checkout -q -b "another/branch-name"
 "$wt/scripts/mobile-worktree-overrides.sh" > /dev/null
-grep -q '^BUNDLE_IDENTIFIER = com\.buzz\.buzzMobile\.feature-work-1$' "$ios" \
+grep -q '^BUNDLE_IDENTIFIER = com\.ttizze\.buzzDiscord\.dev\.feature-work-1$' "$ios" \
   && grep -q '^applicationIdSuffix=\.feature_work_1$' "$android" \
   && pass "branch switch keeps the install identity stable (per worktree)" \
   || fail "install identity must not change on branch switch"
@@ -96,7 +96,7 @@ git -C "$wt" checkout -q -b "it's-\$a\"branch"
 grep -q "^label=it-s-a-branch$" "$android" \
   && pass "apostrophes and shell metacharacters are sanitized out of the label" \
   || fail "label must sanitize special chars, got: $(cat "$android")"
-grep -Eq "^APP_DISPLAY_NAME = Buzz \([A-Za-z0-9._-]+\)$" "$ios" \
+grep -Eq "^APP_DISPLAY_NAME = Buzzcord \([A-Za-z0-9._-]+\)$" "$ios" \
   && pass "iOS display name only contains resource-safe characters" \
   || fail "iOS display name has unsafe characters: $(cat "$ios")"
 
@@ -139,20 +139,20 @@ fi
 grep -q 'WorktreeOverrides' "$release_xcconfig" \
   && fail "Release.xcconfig must not include WorktreeOverrides.xcconfig" \
   || pass "Release.xcconfig does not include WorktreeOverrides"
-grep -q '^BUNDLE_IDENTIFIER = com\.buzz\.buzzMobile$' "$release_xcconfig" \
+grep -q '^BUNDLE_IDENTIFIER = com\.ttizze\.buzzDiscord$' "$release_xcconfig" \
   && pass "Release.xcconfig keeps the production bundle identifier" \
-  || fail "Release.xcconfig must keep BUNDLE_IDENTIFIER = com.buzz.buzzMobile"
-grep -q '^APP_DISPLAY_NAME = Buzz$' "$release_xcconfig" \
+  || fail "Release.xcconfig must keep BUNDLE_IDENTIFIER = com.ttizze.buzzDiscord"
+grep -q '^APP_DISPLAY_NAME = Buzzcord$' "$release_xcconfig" \
   && pass "Release.xcconfig keeps the production display name" \
-  || fail "Release.xcconfig must keep APP_DISPLAY_NAME = Buzz"
+  || fail "Release.xcconfig must keep APP_DISPLAY_NAME = Buzzcord"
 grep -q '<string>$(APP_DISPLAY_NAME)</string>' "$plist" \
   && pass "Info.plist display name resolves from build settings" \
   || fail "Info.plist CFBundleDisplayName must be \$(APP_DISPLAY_NAME)"
 grep -q 'android:label="@string/app_name"' "$manifest" \
   && pass "Android manifest label resolves from resources" \
   || fail "Android manifest label must be @string/app_name"
-grep -q 'resValue("string", "app_name", "Buzz")' "$gradle" \
-  && pass "Gradle default app_name stays Buzz" \
+grep -q 'resValue("string", "app_name", "Buzzcord")' "$gradle" \
+  && pass "Gradle default app_name stays Buzzcord" \
   || fail "Gradle must declare the default app_name resValue"
 grep -q 'worktreeLabel.matches' "$gradle" \
   && pass "Gradle validates the worktree label before use" \

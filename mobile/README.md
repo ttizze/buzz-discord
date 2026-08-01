@@ -63,6 +63,28 @@ flutter test
 
 Or from the repo root: `just mobile-check` and `just mobile-test`.
 
+## TestFlight upload
+
+TestFlight uploads use an App Store Connect API key and do not depend on an
+Apple Account being signed in to Xcode. Create the ignored local file
+`.env.testflight.local` at the repository root:
+
+```bash
+ASC_KEY_ID=YOUR_KEY_ID
+ASC_ISSUER_ID=YOUR_ISSUER_ID
+ASC_KEY_PATH=/absolute/path/to/AuthKey_YOUR_KEY_ID.p8
+ASC_TEAM_ID=YOUR_DEVELOPER_TEAM_ID
+```
+
+Keep the `.p8` file outside the repository. `ASC_KEY_PATH` can be omitted when
+the key is stored at
+`~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8`. Upload an existing
+archive with:
+
+```bash
+just mobile-testflight-upload mobile/build/testflight/Buzzcord.xcarchive
+```
+
 ## Android release signing
 
 Android release builds fail unless all upload-key inputs are supplied through the

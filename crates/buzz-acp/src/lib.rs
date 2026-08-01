@@ -25,8 +25,7 @@ use buzz_core::kind::{
     KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
-    decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
-    OBSERVER_MAX_PLAINTEXT_LEN,
+    decrypt_observer_payload, encrypt_observer_payload, OBSERVER_MAX_PLAINTEXT_LEN,
 };
 use clap::Parser;
 use config::{
@@ -408,13 +407,18 @@ impl ObserverPublishPacer {
     }
 }
 
+struct ObserverTelemetryTarget {
+    recipient_pubkey_hex: String,
+    recipient_pubkey: PublicKey,
+    owner_pubkey_hex: String,
+}
+
 fn spawn_relay_observer_publisher(
     observer: observer::ObserverHandle,
     publisher: RelayEventPublisher,
     keys: nostr::Keys,
     agent_pubkey_hex: String,
-    owner_pubkey_hex: String,
-    owner_pubkey: PublicKey,
+    target: ObserverTelemetryTarget,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Subscribe BEFORE snapshotting so an event emitted between the two
@@ -423,16 +427,7 @@ fn spawn_relay_observer_publisher(
         // high-water `seq` (monotonic, assigned at emit).
         let rx = observer.subscribe();
         let snapshot = observer.snapshot();
-        run_relay_observer_publisher(
-            snapshot,
-            rx,
-            publisher,
-            keys,
-            agent_pubkey_hex,
-            owner_pubkey_hex,
-            owner_pubkey,
-        )
-        .await;
+        run_relay_observer_publisher(snapshot, rx, publisher, keys, agent_pubkey_hex, target).await;
     })
 }
 
@@ -442,8 +437,7 @@ async fn run_relay_observer_publisher(
     publisher: RelayEventPublisher,
     keys: nostr::Keys,
     agent_pubkey_hex: String,
-    owner_pubkey_hex: String,
-    owner_pubkey: PublicKey,
+    target: ObserverTelemetryTarget,
 ) {
     let mut coalescer = ObserverChunkCoalescer::default();
     let mut pacer = ObserverPublishPacer::new();
@@ -454,8 +448,7 @@ async fn run_relay_observer_publisher(
                 &publisher,
                 &keys,
                 &agent_pubkey_hex,
-                &owner_pubkey_hex,
-                &owner_pubkey,
+                &target,
                 &mut pacer,
                 event,
             )
@@ -478,7 +471,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.ingest(event) {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                &target, &mut pacer, event,
                             ).await;
                         }
                     }
@@ -486,7 +479,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.flush() {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                &target, &mut pacer, event,
                             ).await;
                         }
                         tracing::warn!(dropped = count, "relay observer publisher lagged");
@@ -495,7 +488,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.flush() {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                &target, &mut pacer, event,
                             ).await;
                         }
                         break;
@@ -507,7 +500,7 @@ async fn run_relay_observer_publisher(
                 for event in coalescer.flush() {
                     publish_relay_observer_event(
                         &publisher, &keys, &agent_pubkey_hex,
-                        &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                        &target, &mut pacer, event,
                     ).await;
                 }
             }
@@ -791,8 +784,7 @@ async fn publish_relay_observer_event(
     publisher: &RelayEventPublisher,
     keys: &nostr::Keys,
     agent_pubkey_hex: &str,
-    owner_pubkey_hex: &str,
-    owner_pubkey: &PublicKey,
+    target: &ObserverTelemetryTarget,
     pacer: &mut ObserverPublishPacer,
     mut event: observer::ObserverEvent,
 ) {
@@ -800,17 +792,17 @@ async fn publish_relay_observer_event(
     // Trim oversized frames to fit the plaintext cap rather than letting
     // encrypt_observer_payload reject and drop them whole (silent telemetry loss).
     fit_observer_event_to_budget(&mut event);
-    let encrypted = match encrypt_observer_payload(keys, owner_pubkey, &event) {
+    let encrypted = match encrypt_observer_payload(keys, &target.recipient_pubkey, &event) {
         Ok(encrypted) => encrypted,
         Err(error) => {
             tracing::warn!("failed to encrypt relay observer event: {error}");
             return;
         }
     };
-    let builder = match buzz_sdk::build_agent_observer_frame(
-        owner_pubkey_hex,
+    let builder = match buzz_sdk::build_delegated_agent_observer_telemetry_frame(
+        &target.recipient_pubkey_hex,
         agent_pubkey_hex,
-        OBSERVER_FRAME_TELEMETRY,
+        &target.owner_pubkey_hex,
         &encrypted,
     ) {
         Ok(builder) => builder,
@@ -1394,35 +1386,52 @@ async fn tokio_main() -> Result<()> {
     let mut relay_observer_publisher_task = None;
     let mut relay_observer_publisher = None;
     if config.relay_observer {
-        if let (Some(observer), Some(owner_pubkey_hex)) =
-            (observer.clone(), owner_cache.pubkey.clone())
-        {
-            match PublicKey::from_hex(&owner_pubkey_hex) {
-                Ok(owner_pubkey) => {
+        let recipient_pubkey_hex = config
+            .relay_observer_recipient
+            .clone()
+            .or_else(|| owner_cache.pubkey.clone());
+        if let (Some(observer), Some(recipient_pubkey_hex), Some(owner_pubkey_hex)) = (
+            observer.clone(),
+            recipient_pubkey_hex,
+            owner_cache.pubkey.clone(),
+        ) {
+            match PublicKey::from_hex(&recipient_pubkey_hex) {
+                Ok(recipient_pubkey) => {
                     relay_observer_publisher = Some((
                         observer,
                         relay.event_publisher(),
                         config.keys.clone(),
                         pubkey_hex.clone(),
-                        owner_pubkey_hex,
-                        owner_pubkey,
+                        ObserverTelemetryTarget {
+                            recipient_pubkey_hex: recipient_pubkey_hex.clone(),
+                            recipient_pubkey,
+                            owner_pubkey_hex,
+                        },
                     ));
-                    relay
-                        .subscribe_observer_controls()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("observer control subscribe error: {e}"))?;
-                    relay_observer_control_rx = relay.take_observer_control_rx();
-                    tracing::info!("relay observer enabled");
+                    tracing::info!(
+                        recipient = %recipient_pubkey_hex,
+                        "relay observer telemetry enabled"
+                    );
                 }
                 Err(error) => {
-                    tracing::warn!("relay observer disabled: invalid owner pubkey: {error}");
+                    tracing::warn!("relay observer disabled: invalid recipient pubkey: {error}");
                 }
             }
         } else {
             tracing::warn!(
-                "relay observer requested but no agent owner was resolved at startup; \
-                 observer frames will not be published"
+                "relay observer requested but both an agent owner and telemetry recipient \
+                 are required; observer frames will not be published"
             );
+        }
+
+        if owner_cache.pubkey.is_some() {
+            relay
+                .subscribe_observer_controls()
+                .await
+                .map_err(|e| anyhow::anyhow!("observer control subscribe error: {e}"))?;
+            relay_observer_control_rx = relay.take_observer_control_rx();
+        } else {
+            tracing::info!("relay observer controls disabled: no agent owner resolved");
         }
     }
 
@@ -1485,16 +1494,14 @@ async fn tokio_main() -> Result<()> {
         }
     }
 
-    if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
-        relay_observer_publisher.take()
+    if let Some((observer, publisher, keys, agent_pubkey, target)) = relay_observer_publisher.take()
     {
         relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
             observer,
             publisher,
             keys,
             agent_pubkey,
-            owner_pubkey,
-            owner,
+            target,
         ));
     }
 
@@ -4831,8 +4838,11 @@ mod observer_snapshot_race_tests {
             publisher,
             agent_keys.clone(),
             agent_keys.public_key().to_hex(),
-            owner_keys.public_key().to_hex(),
-            owner_keys.public_key(),
+            ObserverTelemetryTarget {
+                recipient_pubkey_hex: owner_keys.public_key().to_hex(),
+                recipient_pubkey: owner_keys.public_key(),
+                owner_pubkey_hex: owner_keys.public_key().to_hex(),
+            },
         )
         .await;
 
@@ -5031,6 +5041,7 @@ mod build_mcp_servers_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_observer_recipient: None,
             lazy_pool: false,
             agent_owner: None,
             no_base_prompt: false,
@@ -5252,6 +5263,7 @@ mod error_outcome_emission_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_observer_recipient: None,
             lazy_pool: false,
             agent_owner: None,
             no_base_prompt: false,

@@ -553,24 +553,30 @@ function renderMarkdown(content) {
   );
 }
 
-test("messageLinkUrlTransform: preserves buzz://message href", () => {
+test("messageLinkUrlTransform: preserves buzzcord://message href", () => {
   const html = renderMarkdown(
-    "Click [here](buzz://message?channel=abc&id=xyz)",
+    "Click [here](buzzcord://message?channel=abc&id=xyz)",
   );
   // HTML-encoded `&` in attributes is fine — the browser decodes back to `&`.
-  assert.match(html, /href="buzz:\/\/message\?channel=abc&(?:amp;)?id=xyz"/);
-});
-
-test("messageLinkUrlTransform: preserves buzz://message autolink href", () => {
-  const html = renderMarkdown("<buzz://message?channel=abc&id=xyz>");
-  assert.match(html, /href="buzz:\/\/message\?channel=abc&(?:amp;)?id=xyz"/);
-});
-
-test("messageLinkUrlTransform: preserves buzz://message href with thread", () => {
-  const html = renderMarkdown(
-    "[link](buzz://message?channel=c1&id=m1&thread=t1)",
+  assert.match(
+    html,
+    /href="buzzcord:\/\/message\?channel=abc&(?:amp;)?id=xyz"/,
   );
-  assert.match(html, /href="buzz:\/\/message\?[^"]*thread=t1"/);
+});
+
+test("messageLinkUrlTransform: preserves buzzcord://message autolink href", () => {
+  const html = renderMarkdown("<buzzcord://message?channel=abc&id=xyz>");
+  assert.match(
+    html,
+    /href="buzzcord:\/\/message\?channel=abc&(?:amp;)?id=xyz"/,
+  );
+});
+
+test("messageLinkUrlTransform: preserves buzzcord://message href with thread", () => {
+  const html = renderMarkdown(
+    "[link](buzzcord://message?channel=c1&id=m1&thread=t1)",
+  );
+  assert.match(html, /href="buzzcord:\/\/message\?[^"]*thread=t1"/);
 });
 
 test("messageLinkUrlTransform: still strips javascript: scheme", () => {
@@ -623,7 +629,7 @@ test("remarkSpoilers: block delimiter spoilers expose a block prop to React", ()
   assert.equal(spoilerProps?.["data-block-spoiler"], "");
 });
 
-// `remark-gfm`'s autolinker only covers http(s)://, so bare `buzz://message`
+// `remark-gfm`'s autolinker only covers http(s)://, so bare `buzzcord://message`
 // URLs in plain text never reach any rendering path without this plugin.
 // The plugin emits a custom `message-link` HAST element which markdown.tsx
 // renders as an inline pill. Tests operate on the mdast tree directly —
@@ -644,12 +650,12 @@ function text(value) {
   return { type: "text", value };
 }
 
-test("remarkMessageLinks: bare buzz://message URL is replaced", () => {
-  const tree = runPlugin(paragraph(text("buzz://message?channel=c&id=m")));
+test("remarkMessageLinks: bare buzzcord://message URL is replaced", () => {
+  const tree = runPlugin(paragraph(text("buzzcord://message?channel=c&id=m")));
   const para = tree.children[0];
   assert.equal(para.children.length, 1);
   assert.equal(para.children[0].type, "message-link");
-  assert.equal(para.children[0].value, "buzz://message?channel=c&id=m");
+  assert.equal(para.children[0].value, "buzzcord://message?channel=c&id=m");
   assert.equal(para.children[0].data.hName, "message-link");
 });
 
@@ -663,7 +669,7 @@ test("remarkMessageLinks: legacy bare buzz://message URL is replaced", () => {
 
 test("remarkMessageLinks: mid-sentence URL splits surrounding text", () => {
   const tree = runPlugin(
-    paragraph(text("see buzz://message?channel=c&id=m here")),
+    paragraph(text("see buzzcord://message?channel=c&id=m here")),
   );
   const kids = tree.children[0].children;
   assert.equal(kids.length, 3);
