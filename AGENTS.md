@@ -559,6 +559,21 @@ flutter test
 
 Or from repo root: `just mobile-fmt` (auto-fix), `just mobile-check` (lint + fmt check), `just mobile-test` (tests).
 
+### TestFlight Uploads
+
+- **Always upload an existing `.xcarchive` with
+  `just mobile-testflight-upload <archive-path>`.** Do not invoke a raw
+  `xcodebuild -exportArchive` upload or depend on an Apple Account being signed
+  in through Xcode Accounts.
+- The uploader reads the ignored `.env.testflight.local` file and passes the
+  App Store Connect API key explicitly through `-authenticationKeyPath`,
+  `-authenticationKeyID`, and `-authenticationKeyIssuerID`.
+- Keep the `.p8` private key outside the repository. Never commit, print, or
+  copy its contents into logs; validate only that the configured file exists.
+- If the local TestFlight configuration is absent, follow
+  [mobile/README.md](mobile/README.md#testflight-upload) to configure the key
+  identifiers and external key path before attempting an upload.
+
 To run the app locally (starts Docker, relay, iOS simulator automatically):
 
 ```bash
