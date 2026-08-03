@@ -8,7 +8,8 @@ use tracing::{debug, error, info, warn};
 use buzz_core::event::StoredEvent;
 use buzz_core::kind::{
     event_kind_u32, is_ephemeral, is_unshared_gated_event, AUTHOR_ONLY_KINDS,
-    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_PRESENCE_UPDATE,
+    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_HOST_RPC_REQUEST, KIND_HOST_RPC_RESPONSE,
+    KIND_PRESENCE_UPDATE,
 };
 use buzz_core::observer::{
     content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -791,6 +792,16 @@ async fn handle_ephemeral_event(
         }
     }
 
+    if matches!(
+        event_kind_u32(&event),
+        KIND_HOST_RPC_REQUEST | KIND_HOST_RPC_RESPONSE
+    ) {
+        if let Err(message) = validate_host_rpc_envelope(&event) {
+            conn.send(RelayMessage::ok(event_id_hex, false, message));
+            return;
+        }
+    }
+
     // Special handling for presence events (kind:20001).
     if event_kind_u32(&event) == KIND_PRESENCE_UPDATE {
         // Accept both bare strings ("online") and legacy JSON ({"status":"online"}).
@@ -894,6 +905,49 @@ async fn handle_ephemeral_event(
     }
 
     conn.send(RelayMessage::ok(event_id_hex, true, ""));
+}
+
+fn validate_host_rpc_envelope(event: &Event) -> Result<(), &'static str> {
+    if !content_looks_like_nip44(&event.content) {
+        return Err("invalid: host RPC content must be NIP-44 ciphertext");
+    }
+    let p_tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|part| part == "p"))
+        .collect::<Vec<_>>();
+    if p_tags.len() != 1
+        || p_tags[0]
+            .as_slice()
+            .get(1)
+            .is_none_or(|value| PublicKey::from_hex(value).is_err())
+    {
+        return Err("invalid: host RPC must include exactly one valid p tag");
+    }
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().is_some_and(|part| part == "h"))
+    {
+        return Err("invalid: host RPC cannot be channel-scoped");
+    }
+    let e_tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|part| part == "e"))
+        .collect::<Vec<_>>();
+    if event_kind_u32(event) == KIND_HOST_RPC_REQUEST && !e_tags.is_empty() {
+        return Err("invalid: host RPC request cannot include an e tag");
+    }
+    if event_kind_u32(event) == KIND_HOST_RPC_RESPONSE
+        && (e_tags.len() != 1
+            || e_tags[0].as_slice().get(1).is_none_or(|value| {
+                value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }))
+    {
+        return Err("invalid: host RPC response must reference one request event");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1187,7 +1241,8 @@ mod tests {
 
     use buzz_core::kind::{
         KIND_AGENT_OBSERVER_FRAME, KIND_CANVAS, KIND_FORUM_COMMENT, KIND_FORUM_POST,
-        KIND_FORUM_VOTE, KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF,
+        KIND_FORUM_VOTE, KIND_HOST_RPC_REQUEST, KIND_HOST_RPC_RESPONSE, KIND_PRESENCE_UPDATE,
+        KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF,
     };
     use buzz_core::observer::{
         encrypt_observer_payload, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -1197,6 +1252,55 @@ mod tests {
     use tokio::sync::{mpsc, Mutex, RwLock};
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+
+    fn host_rpc_event(kind: u32, response_reference: bool) -> nostr::Event {
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let ciphertext = nostr::nips::nip44::encrypt(
+            sender.secret_key(),
+            &recipient.public_key(),
+            r#"{"requestId":"test"}"#,
+            nostr::nips::nip44::Version::V2,
+        )
+        .expect("encrypt");
+        let mut tags = vec![Tag::public_key(recipient.public_key())];
+        if response_reference {
+            tags.push(Tag::event(
+                EventBuilder::text_note("request")
+                    .sign_with_keys(&recipient)
+                    .expect("request")
+                    .id,
+            ));
+        }
+        EventBuilder::new(Kind::Custom(kind as u16), ciphertext)
+            .tags(tags)
+            .sign_with_keys(&sender)
+            .expect("host RPC event")
+    }
+
+    #[test]
+    fn host_rpc_envelope_requires_encrypted_single_recipient_routing() {
+        let request = host_rpc_event(KIND_HOST_RPC_REQUEST, false);
+        assert!(super::validate_host_rpc_envelope(&request).is_ok());
+
+        let response = host_rpc_event(KIND_HOST_RPC_RESPONSE, true);
+        assert!(super::validate_host_rpc_envelope(&response).is_ok());
+
+        let sender = Keys::generate();
+        let invalid = EventBuilder::new(Kind::Custom(KIND_HOST_RPC_REQUEST as u16), "plaintext")
+            .sign_with_keys(&sender)
+            .expect("invalid event");
+        assert_eq!(
+            super::validate_host_rpc_envelope(&invalid),
+            Err("invalid: host RPC content must be NIP-44 ciphertext")
+        );
+
+        let response_without_request = host_rpc_event(KIND_HOST_RPC_RESPONSE, false);
+        assert_eq!(
+            super::validate_host_rpc_envelope(&response_without_request),
+            Err("invalid: host RPC response must reference one request event")
+        );
+    }
 
     #[test]
     fn fanout_event_frame_matches_legacy_format_byte_for_byte() {

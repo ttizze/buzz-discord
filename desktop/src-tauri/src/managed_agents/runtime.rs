@@ -880,8 +880,8 @@ pub fn spawn_agent_child(
     let start_nonce = uuid::Uuid::new_v4().simple().to_string();
     command
         .env("BUZZ_MANAGED_AGENT", current_instance_id(app))
-        .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce);
-
+        .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce)
+        .env("BUZZ_COMPUTER_ID", crate::computer_id(app)?);
     // Spawn the harness in its own process group so we can kill the entire
     // tree (harness + MCP servers + agent subprocesses) on shutdown.
     #[cfg(unix)]

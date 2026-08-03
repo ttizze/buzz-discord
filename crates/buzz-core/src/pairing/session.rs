@@ -110,7 +110,15 @@ impl PairingSession {
     /// Create a new source session. Returns the session and a QR payload
     /// to display to the user.
     pub fn new_source(relay_url: String) -> (Self, QrPayload) {
-        let keys = Keys::generate();
+        Self::new_source_with_keys(relay_url, Keys::generate())
+    }
+
+    /// Create a source session using a caller-owned persistent keypair.
+    ///
+    /// Normal identity transfer uses a fresh ephemeral source key. Headless
+    /// computer enrollment uses the computer's persistent key so the Desktop
+    /// can bind the paired public key without a second unauthenticated step.
+    pub fn new_source_with_keys(relay_url: String, keys: Keys) -> (Self, QrPayload) {
         let mut session_secret = [0u8; 32];
         rand::fill(&mut session_secret);
 
@@ -419,6 +427,35 @@ impl PairingSession {
         self.state = SessionState::Completed;
         Ok(event)
     }
+
+    /// (Target extension) Send one custom response payload after receiving
+    /// the source payload and before sending `complete`.
+    ///
+    /// NIP-AB permits application-defined payload interpretation. Buzz Host
+    /// uses this encrypted response to return the owner's relay binding and
+    /// NIP-OA attestation without exposing the owner's private key.
+    pub fn send_response_payload(
+        &mut self,
+        payload_type: PayloadType,
+        payload: Zeroizing<String>,
+    ) -> Result<Event, PairingError> {
+        self.check_expired()?;
+        self.expect_state(SessionState::PayloadExchanged)?;
+        self.expect_role(Role::Target)?;
+
+        let mut msg = PairingMessage::Payload {
+            payload_type,
+            payload: (*payload).clone(),
+        };
+        let result = self.build_event(&msg);
+        if let PairingMessage::Payload {
+            ref mut payload, ..
+        } = msg
+        {
+            payload.zeroize();
+        }
+        result
+    }
 }
 
 impl PairingSession {
@@ -490,6 +527,35 @@ impl PairingSession {
     /// This session's ephemeral public key.
     pub fn pubkey(&self) -> PublicKey {
         self.keys.public_key()
+    }
+
+    /// Paired peer public key, once known.
+    pub fn peer_pubkey(&self) -> Option<PublicKey> {
+        self.peer_pubkey
+    }
+
+    /// (Source extension) Receive the target's custom response payload after
+    /// the source payload has been sent.
+    pub fn handle_response_payload(
+        &mut self,
+        event: &Event,
+    ) -> Result<(PayloadType, Zeroizing<String>), PairingError> {
+        self.check_expired()?;
+        self.expect_state(SessionState::PayloadExchanged)?;
+        self.expect_role(Role::Source)?;
+        self.validate_event_from_peer(event)?;
+
+        let msg = self.decrypt_message(event)?;
+        match msg {
+            PairingMessage::Payload {
+                payload_type,
+                payload,
+            } => {
+                self.record_event(event);
+                Ok((payload_type, Zeroizing::new(payload)))
+            }
+            other => Err(unexpected("response payload", &other)),
+        }
     }
 
     /// Relay URLs for this session.
@@ -818,6 +884,43 @@ mod tests {
         source
             .handle_complete(&complete_event)
             .expect("handle complete");
+        assert_eq!(source.state(), SessionState::Completed);
+    }
+
+    #[test]
+    fn target_can_return_one_encrypted_custom_response_before_complete() {
+        let persistent_source_keys = Keys::generate();
+        let expected_source_pubkey = persistent_source_keys.public_key();
+        let (mut source, qr) =
+            PairingSession::new_source_with_keys("wss://relay.test".into(), persistent_source_keys);
+        assert_eq!(source.pubkey(), expected_source_pubkey);
+
+        let (mut target, offer) = PairingSession::new_target(&qr).expect("target");
+        let _ = source.handle_offer(&offer).expect("offer");
+        let sas_confirm = source.confirm_sas().expect("confirm");
+        let _ = target
+            .handle_sas_confirm(&sas_confirm)
+            .expect("sas-confirm");
+        target.confirm_target_sas().expect("target confirm");
+        let payload = source
+            .send_payload(PayloadType::Custom, Zeroizing::new("host-offer".into()))
+            .expect("source payload");
+        let _ = target.handle_payload(&payload).expect("target payload");
+
+        let response = target
+            .send_response_payload(
+                PayloadType::Custom,
+                Zeroizing::new("owner-attestation".into()),
+            )
+            .expect("response payload");
+        let (payload_type, response_body) = source
+            .handle_response_payload(&response)
+            .expect("receive response");
+        assert_eq!(payload_type, PayloadType::Custom);
+        assert_eq!(*response_body, "owner-attestation");
+
+        let complete = target.send_complete().expect("complete");
+        source.handle_complete(&complete).expect("handle complete");
         assert_eq!(source.state(), SessionState::Completed);
     }
 

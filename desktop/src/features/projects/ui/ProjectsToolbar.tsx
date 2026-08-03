@@ -60,7 +60,7 @@ export function ProjectsToolbar({
     value: ProjectsFilter;
   }> = [
     { label: "Overview", value: "all" },
-    { label: "Repositories", value: "repositories" },
+    { label: "Projects", value: "repositories" },
     { label: "Pull Requests", value: "prs" },
     { label: "Issues", value: "issues" },
   ];

@@ -6,17 +6,21 @@ import {
   type Project,
   projectsQueryKey,
 } from "@/features/projects/hooks";
+import { channelsQueryKey } from "@/features/channels/hooks";
 import { relayClient } from "@/shared/api/relayClient";
 import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
-import { signRelayEvent } from "@/shared/api/tauri";
+import { createChannel, signRelayEvent } from "@/shared/api/tauri";
 import { getIdentity } from "@/shared/api/tauriIdentity";
-import { KIND_REPO_ANNOUNCEMENT } from "@/shared/constants/kinds";
+import { KIND_SHARED_PROJECT } from "@/shared/constants/kinds";
 
 export type CreateProjectInput = {
   name: string;
   description?: string;
-  cloneUrl?: string;
-  webUrl?: string;
+  workspacePath: string;
+  computerId: string;
+  computerName: string;
+  computerAccess: "personal" | "shared";
+  gitRepository: boolean;
 };
 
 function projectDtagFromName(name: string): string {
@@ -26,7 +30,7 @@ function projectDtagFromName(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Publishes a NIP-34 repo announcement so the project appears on the relay. */
+/** Publishes a computer-hosted shared project to the community relay. */
 async function createProject(input: CreateProjectInput): Promise<Project> {
   const name = input.name.trim();
   if (!name) {
@@ -35,6 +39,9 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
   const dtag = projectDtagFromName(name);
   if (!dtag) {
     throw new Error("Project name must include letters or numbers.");
+  }
+  if (!/^(?:\/|[A-Za-z]:[\\/])/.test(input.workspacePath)) {
+    throw new Error("Choose a local project folder first.");
   }
 
   const identity = await getIdentity();
@@ -50,24 +57,27 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
   }
 
   const description = input.description?.trim() ?? "";
+  const projectChannel = await createChannel({
+    name: dtag,
+    channelType: "stream",
+    visibility: "open",
+    description: description || `Project channel for ${name}`,
+  });
   const tags: string[][] = [
     ["d", dtag],
     ["name", name],
+    ["project-channel", projectChannel.id],
+    ["workspace", input.workspacePath],
+    ["computer-id", input.computerId],
+    ["computer", input.computerName],
+    ["computer-access", input.computerAccess],
+    ["git", input.gitRepository ? "true" : "false"],
   ];
   if (description) {
     tags.push(["description", description]);
   }
-  const cloneUrl = input.cloneUrl?.trim();
-  if (cloneUrl) {
-    tags.push(["clone", cloneUrl]);
-  }
-  const webUrl = input.webUrl?.trim();
-  if (webUrl) {
-    tags.push(["web", webUrl]);
-  }
-
   const event = await signRelayEvent({
-    kind: KIND_REPO_ANNOUNCEMENT,
+    kind: KIND_SHARED_PROJECT,
     content: description,
     tags,
   });
@@ -93,6 +103,7 @@ export function useCreateProjectMutation() {
         ...current,
       ]);
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
     },
   });
 }

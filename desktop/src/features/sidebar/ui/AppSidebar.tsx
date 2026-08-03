@@ -1,6 +1,7 @@
 // biome-ignore format: keep compact to stay within file size limit
 import * as React from "react";
-import { FeatureGate } from "@/shared/features";
+import { FeatureGate, useFeatureEnabled } from "@/shared/features";
+import { useProjectsQuery } from "@/features/projects/hooks";
 import { SidebarDndContext } from "@/features/sidebar/ui/SidebarDnd";
 import type { Community } from "@/features/communities/types";
 import { AddCommunityDialog } from "@/features/communities/ui/AddCommunityDialog";
@@ -36,6 +37,7 @@ import {
 } from "@/features/sidebar/ui/AppSidebarPinnedHeader";
 import { MoreUnreadButton } from "@/features/sidebar/ui/MoreUnreadButton";
 import { SidebarSection } from "@/features/sidebar/ui/SidebarSection";
+import { ProjectSidebarTree } from "@/features/sidebar/ui/ProjectSidebarTree";
 import {
   ChannelGroupSection,
   CustomChannelSection,
@@ -98,6 +100,7 @@ type AppSidebarProps = {
   selfPresenceStatus: PresenceStatus;
   errorMessage?: string;
   selectedChannelId: string | null;
+  selectedProjectId: string | null;
   selectedView:
     | "home"
     | "channel"
@@ -147,6 +150,7 @@ type AppSidebarProps = {
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
   onSelectHome: () => void;
+  onSelectProject: (projectId: string) => void;
   onSelectChannel: (channelId: string) => void;
   onOpenSearchResult: (hit: SearchHit) => void;
   /**
@@ -192,6 +196,7 @@ export function AppSidebar({
   selfPresenceStatus,
   errorMessage,
   selectedChannelId,
+  selectedProjectId,
   selectedView,
   unreadChannelCounts,
   unreadChannelIds,
@@ -216,6 +221,7 @@ export function AppSidebar({
   onSelectPulse,
   onSelectWorkflows,
   onSelectHome,
+  onSelectProject,
   onSelectChannel,
   onOpenSearchResult,
   searchChannels,
@@ -237,6 +243,8 @@ export function AppSidebar({
   onStarChannel,
   onUnstarChannel,
 }: AppSidebarProps) {
+  const projectsEnabled = useFeatureEnabled("projects");
+  const projectsQuery = useProjectsQuery({ enabled: projectsEnabled });
   const activeWorkingByChannelId = useActiveWorkingChannelsById();
   const { status: updateStatus } = useUpdaterContext();
   const canShowSidebarUpdateCard = shouldShowSidebarUpdateCard(updateStatus);
@@ -249,45 +257,6 @@ export function AppSidebar({
   const [dmActionsMenuOpen, setDmActionsMenuOpen] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   useSidebarScrollLock(scrollRef);
-
-  React.useEffect(() => {
-    const scrollElement = scrollRef.current;
-    if (!scrollElement) return;
-
-    const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY === 0) return;
-
-      const maxScrollTop =
-        scrollElement.scrollHeight - scrollElement.clientHeight;
-      if (maxScrollTop <= 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-
-      const atTop = scrollElement.scrollTop <= 0;
-      const atBottom = scrollElement.scrollTop >= maxScrollTop - 1;
-      const scrollingPastTop = event.deltaY < 0 && atTop;
-      const scrollingPastBottom = event.deltaY > 0 && atBottom;
-
-      if (scrollingPastTop || scrollingPastBottom) {
-        event.preventDefault();
-        event.stopPropagation();
-        scrollElement.scrollTop = scrollingPastTop ? 0 : maxScrollTop;
-      }
-    };
-
-    scrollElement.addEventListener("wheel", handleWheel, {
-      capture: true,
-      passive: false,
-    });
-    return () => {
-      scrollElement.removeEventListener("wheel", handleWheel, {
-        capture: true,
-      });
-    };
-  }, []);
-
   const [createDialogKind, setCreateDialogKind] =
     React.useState<CreateChannelKind | null>(null);
   const { openNextFrame: openModalNextFrame } = useDeferredModalOpen();
@@ -298,13 +267,11 @@ export function AppSidebar({
     },
     [openModalNextFrame],
   );
-
   React.useEffect(() => {
     if (!canShowSidebarUpdateCard) {
       setIsSidebarUpdateCardDismissed(false);
     }
   }, [canShowSidebarUpdateCard]);
-
   // Allow the create-channel dialog to be opened from outside (e.g. the
   // ⌘⇧N global shortcut in AppShell), mirroring the controlled new-DM lift.
   // When the external flag flips on, open the "stream" create dialog; the
@@ -383,9 +350,22 @@ export function AppSidebar({
       if (channel.id === selectedChannelId) onSelectHome();
     });
 
+  const projectLinkedChannelIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const project of projectsQuery.data ?? []) {
+      if (project.projectChannelId) ids.add(project.projectChannelId);
+    }
+    return ids;
+  }, [projectsQuery.data]);
+
   const streamChannels = React.useMemo(
-    () => channels.filter((channel) => channel.channelType === "stream"),
-    [channels],
+    () =>
+      channels.filter(
+        (channel) =>
+          channel.channelType === "stream" &&
+          !projectLinkedChannelIds.has(channel.id),
+      ),
+    [channels, projectLinkedChannelIds],
   );
 
   const sectionBuckets = React.useMemo(() => {
@@ -424,7 +404,6 @@ export function AppSidebar({
     starredChannelIds,
     sortModeFor,
   ]);
-
   const starredChannels = React.useMemo(() => {
     if (!starredChannelIds || starredChannelIds.size === 0) return [];
     return sortChannelsForSidebar(
@@ -457,10 +436,14 @@ export function AppSidebar({
   const forumChannels = React.useMemo(
     () =>
       sortChannelsForSidebar(
-        channels.filter((channel) => channel.channelType === "forum"),
+        channels.filter(
+          (channel) =>
+            channel.channelType === "forum" &&
+            !projectLinkedChannelIds.has(channel.id),
+        ),
         sortModeFor("forums"),
       ),
-    [channels, sortModeFor],
+    [channels, projectLinkedChannelIds, sortModeFor],
   );
   const directMessages = React.useMemo(
     () => channels.filter((channel) => channel.channelType === "dm"),
@@ -611,11 +594,28 @@ export function AppSidebar({
                 homeBadgeCount={homeBadgeCount}
                 onSelectAgents={onSelectAgents}
                 onSelectHome={onSelectHome}
-                onSelectProjects={onSelectProjects}
                 onSelectPulse={onSelectPulse}
                 onSelectWorkflows={onSelectWorkflows}
                 selectedView={selectedView}
               />
+
+              {projectsEnabled ? (
+                <ProjectSidebarTree
+                  activeWorkingByChannelId={activeWorkingByChannelId}
+                  channels={channels}
+                  isLoading={projectsQuery.isLoading}
+                  onSelectChannel={onSelectChannel}
+                  onSelectProject={onSelectProject}
+                  onSelectProjects={onSelectProjects}
+                  projects={projectsQuery.data ?? []}
+                  selectedChannelId={selectedChannelId}
+                  selectedProjectId={selectedProjectId}
+                  selectedView={selectedView}
+                  unreadChannelCounts={unreadChannelCounts}
+                  unreadChannelIds={unreadChannelIds}
+                  mutedChannelIds={mutedChannelIds}
+                />
+              ) : null}
 
               {isLoading ? (
                 <SidebarLoadingContent shape={sidebarLoadingShape} />

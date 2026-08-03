@@ -10,35 +10,38 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use buzz_auth::Scope;
+use buzz_core::host::ComputerRegistration;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
     KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
-    KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
-    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
-    KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
-    KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_REACTION, KIND_READ_STATE, KIND_REPORT,
-    KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF,
-    KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED,
-    KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEAM_CATALOG, KIND_TEXT_NOTE,
-    KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER,
-    RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
+    KIND_CANVAS, KIND_COMPUTER_REGISTRATION, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER,
+    KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER,
+    KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP,
+    KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_JOB_ACCEPTED, KIND_JOB_CANCEL,
+    KIND_JOB_ERROR, KIND_JOB_PROGRESS, KIND_JOB_REQUEST, KIND_JOB_RESULT, KIND_LONG_FORM,
+    KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
+    KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP,
+    KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA,
+    KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST,
+    KIND_PRESENCE_UPDATE, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_REACTION, KIND_READ_STATE,
+    KIND_REPORT, KIND_SHARED_PROJECT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
+    KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
+    KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM,
+    KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+    RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
+    RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
 use buzz_core::CommunityId;
-use nostr::Event;
+use nostr::{Event, PublicKey};
 
 use crate::state::AppState;
 
@@ -214,7 +217,8 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
         | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
-        | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
+        | KIND_TEAM_CATALOG | KIND_COMPUTER_REGISTRATION
+        | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
@@ -255,7 +259,13 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_STREAM_MESSAGE_DIFF
         | KIND_FORUM_POST
         | KIND_FORUM_VOTE
-        | KIND_FORUM_COMMENT => Ok(Scope::MessagesWrite),
+        | KIND_FORUM_COMMENT
+        | KIND_JOB_REQUEST
+        | KIND_JOB_ACCEPTED
+        | KIND_JOB_PROGRESS
+        | KIND_JOB_RESULT
+        | KIND_JOB_CANCEL
+        | KIND_JOB_ERROR => Ok(Scope::MessagesWrite),
         KIND_NIP29_PUT_USER | KIND_NIP29_REMOVE_USER | KIND_NIP29_DELETE_GROUP => {
             Ok(Scope::AdminChannels)
         }
@@ -290,6 +300,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
             }
         }
         KIND_NIP29_CREATE_GROUP | KIND_CANVAS => Ok(Scope::ChannelsWrite),
+        KIND_SHARED_PROJECT => Ok(Scope::ChannelsWrite),
         KIND_NIP29_JOIN_REQUEST | KIND_NIP29_LEAVE_REQUEST | KIND_NIP43_LEAVE_REQUEST => {
             Ok(Scope::ChannelsRead)
         }
@@ -425,6 +436,7 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_TEAM
             | KIND_MANAGED_AGENT
             | KIND_TEAM_CATALOG
+            | KIND_COMPUTER_REGISTRATION
             // NIP-34: git events use `a` tags (repo reference), not `h` tags (channel scope).
             // Parameterized replaceable kinds are keyed by (pubkey, kind, d_tag).
             | KIND_GIT_REPO_ANNOUNCEMENT
@@ -437,6 +449,8 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_GIT_STATUS_MERGED
             | KIND_GIT_STATUS_CLOSED
             | KIND_GIT_STATUS_DRAFT
+            // Shared projects identify a computer-hosted workspace, not a channel.
+            | KIND_SHARED_PROJECT
             // Community moderation commands (9040–9044): community-global
             // direct commands, same model as the NIP-43 9030-series. A stray
             // `h` tag must never channel-scope them (pinned contract —
@@ -482,6 +496,14 @@ pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
             | KIND_FORUM_POST
             | KIND_FORUM_VOTE
             | KIND_FORUM_COMMENT
+            // Project agent tasks share the linked project's channel ACL while
+            // remaining a separate task surface in clients.
+            | KIND_JOB_REQUEST
+            | KIND_JOB_ACCEPTED
+            | KIND_JOB_PROGRESS
+            | KIND_JOB_RESULT
+            | KIND_JOB_CANCEL
+            | KIND_JOB_ERROR
             // NIP-29 admin kinds (except CREATE_GROUP which creates the channel)
             | KIND_NIP29_PUT_USER
             | KIND_NIP29_REMOVE_USER
@@ -903,6 +925,295 @@ async fn validate_forum_vote_target(
             return Err("target event has no channel".to_string());
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn job_tag(event: &Event, name: &str) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        (tag.kind().to_string() == name)
+            .then(|| tag.content().map(ToOwned::to_owned))
+            .flatten()
+    })
+}
+
+fn job_root_reference(event: &Event) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        (parts.first().is_some_and(|part| part == "e")
+            && parts.get(3).is_some_and(|marker| marker == "root"))
+        .then(|| parts.get(1).cloned())
+        .flatten()
+    })
+}
+
+fn validate_computer_id(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok()
+}
+
+fn validate_computer_registration_event(event: &Event) -> Result<(), String> {
+    let registration: ComputerRegistration = serde_json::from_str(&event.content)
+        .map_err(|_| "computer registration content is invalid".to_string())?;
+    let d_tags = event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            (tag.as_slice().first().is_some_and(|part| part == "d"))
+                .then(|| tag.as_slice().get(1).cloned())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if d_tags.len() != 1 || d_tags[0] != registration.computer_id {
+        return Err("computer registration d tag must match its computer ID".into());
+    }
+    if !validate_computer_id(&registration.computer_id) {
+        return Err("computer registration computer ID must be a UUID".into());
+    }
+    if registration.computer_name.trim().is_empty() || registration.computer_name.len() > 128 {
+        return Err("computer registration name is invalid".into());
+    }
+    PublicKey::from_hex(&registration.agent_pubkey)
+        .map_err(|_| "computer registration agent pubkey is invalid".to_string())?;
+    if registration.platform.trim().is_empty() || registration.platform.len() > 64 {
+        return Err("computer registration platform is invalid".into());
+    }
+    if registration.capabilities.len() > 64
+        || registration
+            .capabilities
+            .iter()
+            .any(|capability| capability.trim().is_empty() || capability.len() > 64)
+    {
+        return Err("computer registration capabilities are invalid".into());
+    }
+    let path = &registration.default_path;
+    let is_absolute = path.starts_with('/')
+        || (path.len() >= 3
+            && path.as_bytes()[0].is_ascii_alphabetic()
+            && path.as_bytes()[1] == b':'
+            && matches!(path.as_bytes()[2], b'/' | b'\\'));
+    if !is_absolute || path.len() > 4096 {
+        return Err("computer registration default path must be absolute".into());
+    }
+    Ok(())
+}
+
+fn validate_shared_project_event(event: &Event) -> Result<(), String> {
+    let workspace = job_tag(event, "workspace")
+        .ok_or_else(|| "shared project is missing a workspace tag".to_string())?;
+    let is_absolute = workspace.starts_with('/')
+        || (workspace.len() >= 3
+            && workspace.as_bytes()[0].is_ascii_alphabetic()
+            && workspace.as_bytes()[1] == b':'
+            && matches!(workspace.as_bytes()[2], b'/' | b'\\'));
+    if !is_absolute {
+        return Err("shared project workspace must be an absolute path".to_string());
+    }
+    let computer_id = job_tag(event, "computer-id")
+        .ok_or_else(|| "shared project is missing a computer-id tag".to_string())?;
+    if !validate_computer_id(&computer_id) {
+        return Err("shared project computer-id must be a UUID".to_string());
+    }
+    match job_tag(event, "computer-access").as_deref() {
+        Some("personal" | "shared") => {}
+        _ => return Err("shared project computer-access must be personal or shared".to_string()),
+    }
+    let channel = job_tag(event, "project-channel")
+        .ok_or_else(|| "shared project is missing a project-channel tag".to_string())?;
+    Uuid::parse_str(&channel)
+        .map_err(|_| "shared project project-channel must be a UUID".to_string())?;
+    Ok(())
+}
+
+struct ProjectTaskPolicy {
+    owner: String,
+    workspace: String,
+    computer_id: String,
+    access: String,
+    channel_id: String,
+}
+
+async fn load_project_task_policy(
+    community_id: CommunityId,
+    coordinate: &str,
+    state: &AppState,
+) -> Result<Option<ProjectTaskPolicy>, String> {
+    let mut parts = coordinate.splitn(3, ':');
+    let kind = parts.next().unwrap_or_default();
+    if kind == "30617" {
+        return Ok(None);
+    }
+    if kind != "30623" {
+        return Err("project a tag must reference a project or repository announcement".into());
+    }
+    let owner = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let d_tag = parts.next().unwrap_or_default();
+    if owner.len() != 64 || d_tag.is_empty() {
+        return Err("invalid shared project coordinate".into());
+    }
+    let owner_bytes =
+        hex::decode(&owner).map_err(|_| "invalid project owner pubkey".to_string())?;
+    let project = state
+        .db
+        .query_events(&buzz_db::event::EventQuery {
+            kinds: Some(vec![KIND_SHARED_PROJECT as i32]),
+            pubkey: Some(owner_bytes),
+            d_tag: Some(d_tag.to_string()),
+            global_only: true,
+            limit: Some(1),
+            ..buzz_db::event::EventQuery::for_community(community_id)
+        })
+        .await
+        .map_err(|error| format!("db error: {error}"))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "shared project not found".to_string())?;
+    validate_shared_project_event(&project.event)?;
+    Ok(Some(ProjectTaskPolicy {
+        owner,
+        workspace: job_tag(&project.event, "workspace").unwrap_or_default(),
+        computer_id: job_tag(&project.event, "computer-id").unwrap_or_default(),
+        access: job_tag(&project.event, "computer-access").unwrap_or_default(),
+        channel_id: job_tag(&project.event, "project-channel").unwrap_or_default(),
+    }))
+}
+
+async fn validate_project_agent_binding(
+    community_id: CommunityId,
+    agent: &str,
+    policy: &ProjectTaskPolicy,
+    state: &AppState,
+) -> Result<(), String> {
+    let agent_bytes = hex::decode(agent).map_err(|_| "invalid project agent pubkey".to_string())?;
+    let owner_bytes =
+        hex::decode(&policy.owner).map_err(|_| "invalid project owner".to_string())?;
+    let is_owner = state
+        .db
+        .is_agent_owner(community_id, &agent_bytes, &owner_bytes)
+        .await
+        .map_err(|error| format!("db error checking agent owner: {error}"))?;
+    if !is_owner {
+        return Err("selected agent is not owned by the project owner".to_string());
+    }
+    let binding = state
+        .db
+        .query_events(&buzz_db::event::EventQuery {
+            kinds: Some(vec![KIND_MANAGED_AGENT as i32]),
+            pubkey: Some(owner_bytes),
+            d_tag: Some(agent.to_string()),
+            global_only: true,
+            limit: Some(1),
+            ..buzz_db::event::EventQuery::for_community(community_id)
+        })
+        .await
+        .map_err(|error| format!("db error: {error}"))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "selected agent has no computer binding".to_string())?;
+    let content: serde_json::Value = serde_json::from_str(&binding.event.content)
+        .map_err(|_| "selected agent computer binding is invalid".to_string())?;
+    if content
+        .get("computer_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(policy.computer_id.as_str())
+    {
+        return Err("selected agent belongs to a different computer".to_string());
+    }
+    Ok(())
+}
+
+fn validate_task_request_policy_tags(
+    event: &Event,
+    policy: &ProjectTaskPolicy,
+) -> Result<(), String> {
+    let channel = extract_channel_id(event)
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    if channel != policy.channel_id
+        || job_tag(event, "workspace").as_deref() != Some(policy.workspace.as_str())
+        || job_tag(event, "computer-id").as_deref() != Some(policy.computer_id.as_str())
+        || job_tag(event, "computer-access").as_deref() != Some(policy.access.as_str())
+        || job_tag(event, "project-owner").as_deref() != Some(policy.owner.as_str())
+    {
+        return Err(
+            "agent task must use the project's channel, workspace, computer, access, and owner"
+                .to_string(),
+        );
+    }
+    if policy.access == "personal" && event.pubkey.to_hex() != policy.owner {
+        return Err("only the project owner may run tasks on a personal computer".to_string());
+    }
+    Ok(())
+}
+
+/// Validate the Project Agent Task envelope and bind agent-authored lifecycle
+/// frames to the agent selected by the root request.
+async fn validate_project_agent_task_event(
+    community_id: CommunityId,
+    event: &Event,
+    state: &AppState,
+) -> Result<(), String> {
+    let kind = event_kind_u32(event);
+    let project = job_tag(event, "a").ok_or_else(|| "missing project a tag".to_string())?;
+    if !project.starts_with("30617:") && !project.starts_with("30623:") {
+        return Err(
+            "project a tag must reference a project or repository announcement".to_string(),
+        );
+    }
+    let policy = load_project_task_policy(community_id, &project, state).await?;
+    let Some(root_id) = job_root_reference(event) else {
+        if kind != KIND_JOB_REQUEST {
+            return Err("agent task lifecycle event is missing a root e tag".to_string());
+        }
+        if event.content.trim().is_empty() {
+            return Err("agent task prompt must not be empty".to_string());
+        }
+        let agent = job_tag(event, "p")
+            .ok_or_else(|| "agent task is missing an agent p tag".to_string())?;
+        if let Some(policy) = policy.as_ref() {
+            validate_task_request_policy_tags(event, policy)?;
+            validate_project_agent_binding(community_id, &agent, policy, state).await?;
+        }
+        return Ok(());
+    };
+
+    let root_bytes = hex::decode(&root_id).map_err(|_| "invalid agent task root id".to_string())?;
+    let root = state
+        .db
+        .get_event_by_id(community_id, &root_bytes)
+        .await
+        .map_err(|error| format!("db error: {error}"))?
+        .ok_or_else(|| "agent task root not found".to_string())?;
+    if event_kind_u32(&root.event) != KIND_JOB_REQUEST || job_root_reference(&root.event).is_some()
+    {
+        return Err("agent task root must reference an initial job request".to_string());
+    }
+    if root.channel_id != extract_channel_id(event)
+        || job_tag(&root.event, "a").as_deref() != Some(&project)
+    {
+        return Err("agent task event must use the root project and channel".to_string());
+    }
+    let agent =
+        job_tag(&root.event, "p").ok_or_else(|| "agent task root has no agent".to_string())?;
+    if kind == KIND_JOB_REQUEST {
+        if job_tag(event, "p").as_deref() != Some(&agent) || event.content.trim().is_empty() {
+            return Err(
+                "agent task follow-up must target the root agent and contain text".to_string(),
+            );
+        }
+        if let Some(policy) = policy.as_ref() {
+            validate_task_request_policy_tags(event, policy)?;
+            validate_project_agent_binding(community_id, &agent, policy, state).await?;
+        }
+    } else if kind == KIND_JOB_CANCEL {
+        if let Some(policy) = policy.as_ref() {
+            if policy.access == "personal" && event.pubkey.to_hex() != policy.owner {
+                return Err(
+                    "only the project owner may cancel tasks on a personal computer".into(),
+                );
+            }
+        }
+    } else if kind != KIND_JOB_CANCEL && event.pubkey.to_hex() != agent {
+        return Err("agent task lifecycle event must be signed by the selected agent".to_string());
     }
     Ok(())
 }
@@ -2069,6 +2380,30 @@ async fn ingest_event_inner(
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
     }
 
+    if kind_u32 == KIND_SHARED_PROJECT {
+        validate_shared_project_event(&event)
+            .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))?;
+    }
+
+    if kind_u32 == KIND_COMPUTER_REGISTRATION {
+        validate_computer_registration_event(&event)
+            .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))?;
+    }
+
+    if matches!(
+        kind_u32,
+        KIND_JOB_REQUEST
+            | KIND_JOB_ACCEPTED
+            | KIND_JOB_PROGRESS
+            | KIND_JOB_RESULT
+            | KIND_JOB_CANCEL
+            | KIND_JOB_ERROR
+    ) {
+        validate_project_agent_task_event(tenant.community(), &event, state)
+            .await
+            .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))?;
+    }
+
     if kind_u32 == KIND_STREAM_MESSAGE_DIFF {
         validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
     }
@@ -3226,6 +3561,89 @@ mod tests {
             .tags(nostr_tags)
             .sign_with_keys(&keys)
             .unwrap()
+    }
+
+    #[test]
+    fn computer_registration_binds_validated_content_to_its_d_tag() {
+        let computer_id = "00000000-0000-4000-8000-000000000001";
+        let registration = ComputerRegistration {
+            computer_id: computer_id.into(),
+            computer_name: "buzz-vps-01".into(),
+            agent_pubkey: nostr::Keys::generate().public_key().to_hex(),
+            platform: "linux".into(),
+            capabilities: vec!["files".into(), "shell".into()],
+            default_path: "/srv/projects".into(),
+        };
+        let content = serde_json::to_string(&registration).expect("registration JSON");
+        let valid =
+            make_event_with_tags(KIND_COMPUTER_REGISTRATION, &content, &[&["d", computer_id]]);
+        assert!(validate_computer_registration_event(&valid).is_ok());
+
+        let mismatched = make_event_with_tags(
+            KIND_COMPUTER_REGISTRATION,
+            &content,
+            &[&["d", "00000000-0000-4000-8000-000000000099"]],
+        );
+        assert_eq!(
+            validate_computer_registration_event(&mismatched),
+            Err("computer registration d tag must match its computer ID".into())
+        );
+    }
+
+    #[test]
+    fn shared_project_requires_stable_computer_identity_and_absolute_workspace() {
+        let valid = make_event_with_tags(
+            KIND_SHARED_PROJECT,
+            "",
+            &[
+                &["d", "project"],
+                &["workspace", "/srv/project"],
+                &["computer-id", "00000000-0000-4000-8000-000000000001"],
+                &["computer-access", "shared"],
+                &["project-channel", "00000000-0000-4000-8000-000000000002"],
+            ],
+        );
+        assert!(validate_shared_project_event(&valid).is_ok());
+
+        let relative = make_event_with_tags(
+            KIND_SHARED_PROJECT,
+            "",
+            &[
+                &["d", "project"],
+                &["workspace", "relative/project"],
+                &["computer-id", "00000000-0000-4000-8000-000000000001"],
+                &["computer-access", "personal"],
+                &["project-channel", "00000000-0000-4000-8000-000000000002"],
+            ],
+        );
+        assert!(validate_shared_project_event(&relative)
+            .unwrap_err()
+            .contains("absolute"));
+    }
+
+    #[test]
+    fn personal_project_task_policy_rejects_non_owner_and_tag_substitution() {
+        let owner = "1".repeat(64);
+        let policy = ProjectTaskPolicy {
+            owner: owner.clone(),
+            workspace: "/srv/project".into(),
+            computer_id: "00000000-0000-4000-8000-000000000001".into(),
+            access: "personal".into(),
+            channel_id: "00000000-0000-4000-8000-000000000002".into(),
+        };
+        let event = make_event_with_tags(
+            KIND_JOB_REQUEST,
+            "run",
+            &[
+                &["h", "00000000-0000-4000-8000-000000000002"],
+                &["workspace", "/srv/project"],
+                &["computer-id", "00000000-0000-4000-8000-000000000001"],
+                &["computer-access", "personal"],
+                &["project-owner", &owner],
+            ],
+        );
+        let error = validate_task_request_policy_tags(&event, &policy).unwrap_err();
+        assert!(error.contains("only the project owner"));
     }
 
     #[test]

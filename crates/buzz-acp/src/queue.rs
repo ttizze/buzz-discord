@@ -332,9 +332,25 @@ impl EventQueue {
             }
         };
 
-        // Drain up to MAX_BATCH_EVENTS; leave any remainder in the queue.
+        // Project Agent Tasks are independent Codex-style work units even when
+        // they share one project channel. Never merge separate task roots (or
+        // ordinary channel messages) into one ACP prompt.
         let queue = self.queues.entry(channel_id).or_default();
-        let drain_count = MAX_BATCH_EVENTS.min(queue.len());
+        let drain_count = match queue
+            .front()
+            .and_then(|queued| project_task_root(&queued.event))
+        {
+            Some(root) => queue
+                .iter()
+                .take(MAX_BATCH_EVENTS)
+                .take_while(|queued| project_task_root(&queued.event).as_deref() == Some(&root))
+                .count(),
+            None => queue
+                .iter()
+                .take(MAX_BATCH_EVENTS)
+                .take_while(|queued| project_task_root(&queued.event).is_none())
+                .count(),
+        };
         let mut events: Vec<BatchEvent> = queue
             .drain(..drain_count)
             .map(|qe| BatchEvent {
@@ -816,6 +832,19 @@ impl EventQueue {
                 || self.in_flight_channels.contains(ch)
         });
     }
+}
+
+/// Task root for a Project Agent Task request. Initial requests use their own
+/// event id; follow-ups carry the root in a NIP-10 `e` tag.
+pub(crate) fn project_task_root(event: &Event) -> Option<String> {
+    if event.kind != nostr::Kind::Custom(buzz_core::kind::KIND_JOB_REQUEST as u16) {
+        return None;
+    }
+    Some(
+        parse_thread_tags(event)
+            .root_event_id
+            .unwrap_or_else(|| event.id.to_hex()),
+    )
 }
 
 impl Default for EventQueue {
@@ -1682,6 +1711,71 @@ mod tests {
 
     fn pending_count(q: &EventQueue) -> usize {
         q.queues.values().map(|q| q.len()).sum()
+    }
+
+    fn make_job_queued(channel_id: Uuid, content: &str, root: Option<&str>) -> QueuedEvent {
+        let keys = Keys::generate();
+        let tags = root
+            .map(|root| vec![nostr::Tag::parse(["e", root, "", "root"]).unwrap()])
+            .unwrap_or_default();
+        let event = EventBuilder::new(
+            Kind::Custom(buzz_core::kind::KIND_JOB_REQUEST as u16),
+            content,
+        )
+        .tags(tags)
+        .sign_with_keys(&keys)
+        .unwrap();
+        QueuedEvent {
+            channel_id,
+            event,
+            received_at: Instant::now(),
+            prompt_tag: "project-task".into(),
+        }
+    }
+
+    #[test]
+    fn project_agent_tasks_are_never_batched_across_roots() {
+        let mut queue = EventQueue::new(DedupMode::Queue);
+        let channel = Uuid::new_v4();
+        let first = make_job_queued(channel, "first", None);
+        let first_root = first.event.id.to_hex();
+        let follow_up = make_job_queued(channel, "follow up", Some(&first_root));
+        let second = make_job_queued(channel, "second", None);
+        queue.push(first);
+        queue.push(follow_up);
+        queue.push(second);
+
+        let first_batch = queue.flush_next().expect("first task");
+        assert_eq!(first_batch.events.len(), 2);
+        assert!(first_batch
+            .events
+            .iter()
+            .all(|item| project_task_root(&item.event).as_deref() == Some(&first_root)));
+        queue.mark_complete(channel);
+
+        let second_batch = queue.flush_next().expect("second task");
+        assert_eq!(second_batch.events.len(), 1);
+        assert_ne!(
+            project_task_root(&second_batch.events[0].event).as_deref(),
+            Some(first_root.as_str())
+        );
+    }
+
+    #[test]
+    fn project_agent_tasks_do_not_merge_with_channel_messages() {
+        let mut queue = EventQueue::new(DedupMode::Queue);
+        let channel = Uuid::new_v4();
+        queue.push(make_queued(channel, "human chat"));
+        queue.push(make_job_queued(channel, "task", None));
+
+        let chat_batch = queue.flush_next().expect("chat batch");
+        assert_eq!(chat_batch.events.len(), 1);
+        assert!(project_task_root(&chat_batch.events[0].event).is_none());
+        queue.mark_complete(channel);
+
+        let task_batch = queue.flush_next().expect("task batch");
+        assert_eq!(task_batch.events.len(), 1);
+        assert!(project_task_root(&task_batch.events[0].event).is_some());
     }
 
     fn any_in_flight(q: &EventQueue) -> bool {

@@ -150,6 +150,16 @@ type MockInstallRuntimeResult = {
 type MockBridgeOptions = {
   /** Advertised HEAD for the first mock project without adding that branch. */
   projectHeadBranch?: string;
+  /** Headless computers returned by the native pairing registry. */
+  pairedComputers?: Array<{
+    computerId: string;
+    computerName: string;
+    agentPubkey: string;
+    platform: string;
+    capabilities: string[];
+    defaultPath: string;
+    online: boolean;
+  }>;
   /** Relay NIP-11 identity used to sign authoritative repository state. */
   relaySelf?: string | null;
   /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */
