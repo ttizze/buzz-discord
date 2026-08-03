@@ -5259,7 +5259,11 @@ function isMockProjectScopedEvent(event: RelayEvent): boolean {
     return true;
 
   const hasRepoAddressTag = event.tags.some(
-    (tag) => tag[0] === "a" && (tag[1] ?? "").startsWith("30617:"),
+    (tag) =>
+      tag[0] === "a" &&
+      [KIND_REPO_ANNOUNCEMENT, KIND_SHARED_PROJECT].some((kind) =>
+        (tag[1] ?? "").startsWith(`${kind}:`),
+      ),
   );
   return (
     hasRepoAddressTag &&
