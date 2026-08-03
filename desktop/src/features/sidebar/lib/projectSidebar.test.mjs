@@ -22,9 +22,16 @@ test("linked channel keeps its project expanded", () => {
   );
 });
 
-test("unknown routes fall back to the first project", () => {
+test("unrelated routes leave every project collapsed", () => {
   assert.equal(
     resolveExpandedProjectId(PROJECTS, "missing", "unlinked-channel"),
+    null,
+  );
+});
+
+test("the projects overview can expand the first project", () => {
+  assert.equal(
+    resolveExpandedProjectId(PROJECTS, null, null, true),
     "owner:buzz",
   );
 });

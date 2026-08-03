@@ -41,7 +41,10 @@ test("projects own aligned channel and agent-task navigation", async ({
   await page.goto("/");
 
   const tree = page.getByTestId("project-sidebar-tree");
+  const streamList = page.getByTestId("stream-list");
   await expect(tree).toBeVisible();
+  await expect(streamList.getByTestId("channel-general")).toBeVisible();
+  await expect(streamList.getByTestId("channel-agents")).toBeVisible();
   await page.getByTestId("open-projects-view").click();
   await expect(page.getByTestId("project-sidebar-buzz")).toBeVisible();
   await expect(page.getByTestId("project-sidebar-relay-tools")).toBeVisible();
@@ -52,6 +55,22 @@ test("projects own aligned channel and agent-task navigation", async ({
   await expect(channelsTitle).toBeVisible();
   await expect(agentChatsTitle).toBeVisible();
   await expect(page.getByText("Release readiness review")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("project-buzz-channel-list")
+      .getByTestId("channel-general"),
+  ).toBeVisible();
+  await expect(streamList.getByTestId("channel-general")).toHaveCount(0);
+  await expect(streamList.getByTestId("channel-agents")).toBeVisible();
+
+  await page.getByTestId("channel-general").click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Archive channel" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "Delete channel" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
 
   const [channelsBox, agentChatsBox] = await Promise.all([
     channelsTitle.boundingBox(),
@@ -72,6 +91,8 @@ test("projects own aligned channel and agent-task navigation", async ({
       .getByTestId("project-relay-tools-channel-list")
       .getByTestId("channel-agents"),
   ).toBeVisible();
+  await expect(streamList.getByTestId("channel-agents")).toHaveCount(0);
+  await expect(streamList.getByTestId("channel-general")).toBeVisible();
   await expect(page.getByTestId("project-buzz-channels-title")).toHaveCount(0);
 
   await waitForAnimations(page);

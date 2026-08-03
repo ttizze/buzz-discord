@@ -14,7 +14,8 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import type { Project } from "@/features/projects/hooks";
 import { useProjectAgentTasksQuery } from "@/features/projects/projectAgentTaskHooks";
-import { resolveExpandedProjectId } from "@/features/sidebar/lib/projectSidebar";
+import type { ChannelSection } from "@/features/sidebar/lib/useChannelSections";
+import { ChannelContextMenuItems } from "@/features/sidebar/ui/ChannelContextMenu";
 import { ChannelMenuButton } from "@/features/sidebar/ui/SidebarSection";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -27,19 +28,42 @@ import {
   SidebarMenuItem,
 } from "@/shared/ui/sidebar";
 import { Skeleton } from "@/shared/ui/skeleton";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from "@/shared/ui/context-menu";
 
 type ProjectSidebarTreeProps = {
   activeWorkingByChannelId: ReadonlyMap<string, ActiveChannelTurnSummary>;
+  assignments?: Record<string, string>;
   channels: Channel[];
+  expandedProjectId: string | null;
   isLoading: boolean;
   mutedChannelIds?: ReadonlySet<string>;
+  onAssignChannel?: (channelId: string, sectionId: string) => void;
+  onCreateSectionForChannel?: (channelId: string) => void;
+  onDeleteChannel?: (channel: Channel) => void;
+  onLeaveChannel?: (channel: Channel) => void;
+  onMarkChannelRead?: (
+    channelId: string,
+    lastMessageAt: string | null | undefined,
+  ) => void;
+  onMarkChannelUnread?: (channelId: string) => void;
+  onMuteChannel?: (channelId: string) => void;
   onSelectChannel: (channelId: string) => void;
   onSelectProject: (projectId: string) => void;
   onSelectProjects: () => void;
+  onStarChannel?: (channelId: string) => void;
+  onUnassignChannel?: (channelId: string) => void;
+  onUnmuteChannel?: (channelId: string) => void;
+  onUnstarChannel?: (channelId: string) => void;
   projects: Project[];
+  sections?: ChannelSection[];
   selectedChannelId: string | null;
   selectedProjectId: string | null;
   selectedView: string;
+  starredChannelIds?: ReadonlySet<string>;
   unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
 };
@@ -158,16 +182,31 @@ function ProjectsHeader({
 
 export function ProjectSidebarTree({
   activeWorkingByChannelId,
+  assignments,
   channels,
+  expandedProjectId,
   isLoading,
   mutedChannelIds,
+  onAssignChannel,
+  onCreateSectionForChannel,
+  onDeleteChannel,
+  onLeaveChannel,
+  onMarkChannelRead,
+  onMarkChannelUnread,
+  onMuteChannel,
   onSelectChannel,
   onSelectProject,
   onSelectProjects,
+  onStarChannel,
+  onUnassignChannel,
+  onUnmuteChannel,
+  onUnstarChannel,
   projects,
+  sections,
   selectedChannelId,
   selectedProjectId,
   selectedView,
+  starredChannelIds,
   unreadChannelCounts,
   unreadChannelIds,
 }: ProjectSidebarTreeProps) {
@@ -175,12 +214,6 @@ export function ProjectSidebarTree({
     () => new Map(channels.map((channel) => [channel.id, channel])),
     [channels],
   );
-  const expandedProjectId = resolveExpandedProjectId(
-    projects,
-    selectedProjectId,
-    selectedChannelId,
-  );
-
   return (
     <SidebarGroup
       className="select-none pb-0 pt-0"
@@ -240,26 +273,63 @@ export function ProjectSidebarTree({
                           <SidebarMenu
                             data-testid={`project-${project.dtag}-channel-list`}
                           >
-                            <SidebarMenuItem>
-                              <ChannelMenuButton
-                                activeWorking={activeWorkingByChannelId.get(
-                                  linkedChannel.id,
-                                )}
-                                channel={linkedChannel}
-                                hasUnread={unreadChannelIds.has(
-                                  linkedChannel.id,
-                                )}
-                                isActive={
-                                  selectedView === "channel" &&
-                                  selectedChannelId === linkedChannel.id
-                                }
-                                isMuted={mutedChannelIds?.has(linkedChannel.id)}
-                                onSelectChannel={onSelectChannel}
-                                unreadCount={
-                                  unreadChannelCounts.get(linkedChannel.id) ?? 0
-                                }
-                              />
-                            </SidebarMenuItem>
+                            <ContextMenu>
+                              <ContextMenuTrigger asChild>
+                                <SidebarMenuItem className="group/menu-item">
+                                  <ChannelMenuButton
+                                    activeWorking={activeWorkingByChannelId.get(
+                                      linkedChannel.id,
+                                    )}
+                                    channel={linkedChannel}
+                                    hasUnread={unreadChannelIds.has(
+                                      linkedChannel.id,
+                                    )}
+                                    isActive={
+                                      selectedView === "channel" &&
+                                      selectedChannelId === linkedChannel.id
+                                    }
+                                    isMuted={mutedChannelIds?.has(
+                                      linkedChannel.id,
+                                    )}
+                                    onSelectChannel={onSelectChannel}
+                                    unreadCount={
+                                      unreadChannelCounts.get(
+                                        linkedChannel.id,
+                                      ) ?? 0
+                                    }
+                                  />
+                                </SidebarMenuItem>
+                              </ContextMenuTrigger>
+                              <ContextMenuContent>
+                                <ChannelContextMenuItems
+                                  assignments={assignments}
+                                  channel={linkedChannel}
+                                  hasUnread={unreadChannelIds.has(
+                                    linkedChannel.id,
+                                  )}
+                                  isMuted={mutedChannelIds?.has(
+                                    linkedChannel.id,
+                                  )}
+                                  isStarred={starredChannelIds?.has(
+                                    linkedChannel.id,
+                                  )}
+                                  onAssignChannel={onAssignChannel}
+                                  onCreateSectionForChannel={
+                                    onCreateSectionForChannel
+                                  }
+                                  onDeleteChannel={onDeleteChannel}
+                                  onLeaveChannel={onLeaveChannel}
+                                  onMarkChannelRead={onMarkChannelRead}
+                                  onMarkChannelUnread={onMarkChannelUnread}
+                                  onMuteChannel={onMuteChannel}
+                                  onStarChannel={onStarChannel}
+                                  onUnassignChannel={onUnassignChannel}
+                                  onUnmuteChannel={onUnmuteChannel}
+                                  onUnstarChannel={onUnstarChannel}
+                                  sections={sections}
+                                />
+                              </ContextMenuContent>
+                            </ContextMenu>
                           </SidebarMenu>
                         ) : (
                           <p className="px-2 pb-1 text-xs text-sidebar-foreground/45">
