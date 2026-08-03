@@ -52,6 +52,9 @@ export const KIND_CHANNEL_SORT = 30078;
 export const KIND_PERSONA = 30175;
 export const KIND_TEAM = 30176;
 export const KIND_MANAGED_AGENT = 30177;
+export const KIND_COMPUTER_REGISTRATION = 30179;
+export const KIND_HOST_RPC_REQUEST = 24244;
+export const KIND_HOST_RPC_RESPONSE = 24245;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_AGENT_TURN_METRIC = 44200;
@@ -69,6 +72,9 @@ export const KIND_GIT_STATUS_DRAFT = 1633;
 // NIP-DV: relay-signed per-viewer DM visibility snapshot (d=viewer pubkey,
 // h-tags = currently-hidden DM channel ids).
 export const KIND_DM_VISIBILITY = 30622;
+// Buzz shared project. A project identifies a computer-hosted workspace;
+// repositories are optional resources rather than the project identity.
+export const KIND_SHARED_PROJECT = 30623;
 
 // Human-visible "new content" message kinds. Used as the unread trigger set
 // (sidebar badges, catch-up queries) and as the Home-feed mention query.
@@ -127,12 +133,6 @@ export const CHANNEL_TIMELINE_CONTENT_KINDS = [
   KIND_STREAM_MESSAGE_V2, // 40002
   KIND_STREAM_MESSAGE_DIFF, // 40008 — diff messages (own row)
   KIND_SYSTEM_MESSAGE, // 40099 — system rows (join/leave/channel-created)
-  KIND_JOB_REQUEST, // 43001
-  KIND_JOB_ACCEPTED, // 43002
-  KIND_JOB_PROGRESS, // 43003
-  KIND_JOB_RESULT, // 43004
-  KIND_JOB_CANCEL, // 43005
-  KIND_JOB_ERROR, // 43006
   KIND_HUDDLE_STARTED, // 48100 — huddle session card
 ] as const;
 
@@ -143,12 +143,14 @@ export const CHANNEL_TIMELINE_CONTENT_KINDS = [
 // that would otherwise show as phantom unreads ("4 unread, 1 message").
 const NON_CONVERSATIONAL_UNREAD_KINDS: ReadonlySet<number> = new Set([
   KIND_SYSTEM_MESSAGE, // 40099
-  KIND_JOB_REQUEST, // 43001
-  KIND_JOB_ACCEPTED, // 43002
-  KIND_JOB_PROGRESS, // 43003
-  KIND_JOB_RESULT, // 43004
-  KIND_JOB_CANCEL, // 43005
-  KIND_JOB_ERROR, // 43006
+  // Project Agent Tasks render outside the channel timeline. Keep them
+  // explicitly non-conversational as a defense if a mixed query sees them.
+  KIND_JOB_REQUEST,
+  KIND_JOB_ACCEPTED,
+  KIND_JOB_PROGRESS,
+  KIND_JOB_RESULT,
+  KIND_JOB_CANCEL,
+  KIND_JOB_ERROR,
   KIND_HUDDLE_STARTED, // 48100 — huddle cards are visible but non-conversational
   KIND_HUDDLE_PARTICIPANT_JOINED, // 48101
   KIND_HUDDLE_PARTICIPANT_LEFT, // 48102

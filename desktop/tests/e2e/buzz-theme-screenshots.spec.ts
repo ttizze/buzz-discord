@@ -50,6 +50,10 @@ async function openChannel(page: Page) {
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   await expect(page.getByTestId("app-sidebar")).toBeVisible();
+  await expect(page.getByTestId("project-sidebar-buzz")).toBeVisible();
+  await page
+    .locator(".buzz-sidebar-scrollbar")
+    .evaluate((element) => element.scrollTo({ top: 0 }));
 }
 
 async function expectBuzzSidebarPalette(page: Page, mode: "light" | "dark") {

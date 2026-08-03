@@ -1,0 +1,26 @@
+[Unit]
+Description=Buzz headless computer and ACP agent host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=buzz
+Group=buzz
+StateDirectory=buzz-host
+StateDirectoryMode=0700
+Environment=BUZZ_HOST_STATE_DIR=/var/lib/buzz-host
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/buzz-host/environment
+ExecStart=/usr/local/bin/buzz-host run
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+# The service intentionally has no ProtectHome/ReadOnlyPaths sandbox: folders
+# selected as Buzz projects must remain readable and writable by the `buzz`
+# account. Files inaccessible to that Unix account remain inaccessible to Buzz.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

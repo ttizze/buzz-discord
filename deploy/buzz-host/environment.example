@@ -1,0 +1,10 @@
+# The ACP adapter to run. Install it separately and keep it on the service PATH.
+BUZZ_ACP_AGENT_COMMAND=codex-acp
+
+# codex-acp can authenticate non-interactively with an API key on a headless VPS.
+OPENAI_API_KEY=replace-me
+
+# Optional ACP configuration.
+# BUZZ_ACP_PERMISSION_MODE=approve-all
+# BUZZ_ACP_MCP_COMMAND=buzz-dev-mcp
+# RUST_LOG=buzz_host=info,buzz_acp=info

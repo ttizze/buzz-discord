@@ -649,7 +649,8 @@ fn retain_agent_pending(app: &AppHandle, state: &AppState, record: &ManagedAgent
     let result = (|| -> Result<(), String> {
         let scope = crate::managed_agents::retention::active_retention_scope(app, state)?;
         let conn = open_retention_db(&scope.db_path)?;
-        let content = serde_json::to_string(&agent_event_content(record))
+        let computer_id = crate::computer_id(app)?;
+        let content = serde_json::to_string(&agent_event_content(record, Some(&computer_id)))
             .map_err(|e| format!("failed to serialize agent content: {e}"))?;
         let (owner_pubkey, event) = {
             let keys = &scope.owner_keys;
@@ -659,7 +660,7 @@ fn retain_agent_pending(app: &AppHandle, state: &AppState, record: &ManagedAgent
             if existing.as_ref().is_some_and(|row| row.content == content) {
                 return Ok(());
             }
-            let event = build_agent_event(record)?
+            let event = build_agent_event(record, Some(&computer_id))?
                 .custom_created_at(monotonic_created_at(existing.map(|row| row.created_at)))
                 .sign_with_keys(keys)
                 .map_err(|e| format!("failed to sign agent event: {e}"))?;

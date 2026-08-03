@@ -40,11 +40,17 @@ import {
   KIND_GIT_STATUS_MERGED,
   KIND_GIT_STATUS_OPEN,
   KIND_HUDDLE_STARTED,
+  KIND_JOB_ACCEPTED,
+  KIND_JOB_ERROR,
+  KIND_JOB_PROGRESS,
+  KIND_JOB_REQUEST,
+  KIND_JOB_RESULT,
   KIND_MEMBER_ADDED_NOTIFICATION,
   KIND_MEMBER_REMOVED_NOTIFICATION,
   KIND_PERSONA,
   KIND_REPO_ANNOUNCEMENT,
   KIND_REPO_STATE,
+  KIND_SHARED_PROJECT,
   KIND_STREAM_MESSAGE_EDIT,
   KIND_SYSTEM_MESSAGE,
   KIND_TEXT_NOTE,
@@ -150,6 +156,16 @@ type E2eConfig = {
   mock?: {
     /** Advertised HEAD for the first mock project without adding that branch. */
     projectHeadBranch?: string;
+    /** Headless computers returned by the native pairing registry. */
+    pairedComputers?: Array<{
+      computerId: string;
+      computerName: string;
+      agentPubkey: string;
+      platform: string;
+      capabilities: string[];
+      defaultPath: string;
+      online: boolean;
+    }>;
     /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */
     builderlabAuth?: {
       email?: string;
@@ -1084,6 +1100,8 @@ declare global {
     };
     /** Overrides the first mock repository owner for delegated-owner tests. */
     __BUZZ_E2E_PROJECT_OWNER_OVERRIDE__?: string;
+    /** Starts the project event store empty so first-project creation can be tested. */
+    __BUZZ_E2E_EMPTY_PROJECTS__?: boolean;
     /** Project history kinds rejected with CLOSED for aggregate-query tests. */
     __BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__?: number[];
     /** Captured aggregate project-history filters for request-count assertions. */
@@ -4927,6 +4945,7 @@ const MOCK_PROJECT_SEEDS = [
     owner: MOCK_IDENTITY_PUBKEY,
     contributors: [ALICE_PUBKEY, BOB_PUBKEY, CHARLIE_PUBKEY],
     activityLevel: 4,
+    projectChannelId: STARTER_GENERAL_CHANNEL_ID,
   },
   {
     dtag: "relay-tools",
@@ -4935,6 +4954,7 @@ const MOCK_PROJECT_SEEDS = [
     owner: ALICE_PUBKEY,
     contributors: [MOCK_IDENTITY_PUBKEY, BOB_PUBKEY],
     activityLevel: 2,
+    projectChannelId: "94a444a4-c0a3-5966-ab05-530c6ddc2301",
   },
   {
     dtag: "design-system",
@@ -4943,6 +4963,7 @@ const MOCK_PROJECT_SEEDS = [
     owner: BOB_PUBKEY,
     contributors: [ALICE_PUBKEY],
     activityLevel: 1,
+    projectChannelId: "b5e2f8a1-3c44-5912-9e67-4a8d1f2b3c4e",
   },
 ] as const;
 
@@ -4959,6 +4980,7 @@ const MOCK_PROJECT_SUBJECTS = [
 
 const MOCK_PROJECT_KINDS = new Set<number>([
   KIND_REPO_ANNOUNCEMENT,
+  KIND_SHARED_PROJECT,
   KIND_REPO_STATE,
   KIND_GIT_PATCH,
   KIND_GIT_PULL_REQUEST,
@@ -4968,6 +4990,11 @@ const MOCK_PROJECT_KINDS = new Set<number>([
   KIND_GIT_STATUS_MERGED,
   KIND_GIT_STATUS_CLOSED,
   KIND_GIT_STATUS_DRAFT,
+  KIND_JOB_REQUEST,
+  KIND_JOB_ACCEPTED,
+  KIND_JOB_PROGRESS,
+  KIND_JOB_RESULT,
+  KIND_JOB_ERROR,
 ]);
 
 function mulberry32(seed: number) {
@@ -5014,6 +5041,8 @@ function writeMockProjectBranch(
 }
 
 function buildMockProjectEvents(): RelayEvent[] {
+  if (window.__BUZZ_E2E_EMPTY_PROJECTS__) return [];
+
   const events: RelayEvent[] = [];
   const daySeconds = 86_400;
   const now = Math.floor(Date.now() / 1000);
@@ -5024,18 +5053,24 @@ function buildMockProjectEvents(): RelayEvent[] {
       projectIndex === 0
         ? (window.__BUZZ_E2E_PROJECT_OWNER_OVERRIDE__ ?? seed.owner)
         : seed.owner;
-    const repoAddress = `${KIND_REPO_ANNOUNCEMENT}:${owner}:${seed.dtag}`;
+    const repoAddress = `${KIND_SHARED_PROJECT}:${owner}:${seed.dtag}`;
     const authors = [seed.owner, ...seed.contributors];
     const random = mulberry32(projectIndex + 1);
 
     events.push(
       createMockEvent(
-        KIND_REPO_ANNOUNCEMENT,
+        KIND_SHARED_PROJECT,
         seed.description,
         [
           ["d", seed.dtag],
           ["name", seed.name],
           ["description", seed.description],
+          ["project-channel", seed.projectChannelId],
+          ["workspace", `/Users/demo/${seed.dtag}`],
+          ["computer-id", "00000000-0000-4000-8000-000000000001"],
+          ["computer", "Demo Mac"],
+          ["computer-access", "shared"],
+          ["git", "true"],
           ["clone", `https://relay.example.com/git/${owner}/${seed.dtag}`],
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
@@ -5044,6 +5079,97 @@ function buildMockProjectEvents(): RelayEvent[] {
         `mock-project-${seed.dtag}`.replace(/[^a-zA-Z0-9]/g, ""),
       ),
     );
+
+    if (projectIndex === 0) {
+      const taskId = "d".repeat(64);
+      const taskAgent = "b".repeat(64);
+      const taskTags = [
+        ["h", seed.projectChannelId],
+        ["a", repoAddress],
+        ["e", taskId, "", "root"],
+      ];
+      const observer = (seq: number, kind: string, payload: unknown) =>
+        JSON.stringify({
+          seq,
+          timestamp: new Date((now - 120 + seq) * 1_000).toISOString(),
+          kind,
+          agentIndex: 0,
+          channelId: seed.projectChannelId,
+          sessionId: "project-task-session",
+          turnId: "project-task-turn",
+          payload,
+        });
+      events.push(
+        createMockEvent(
+          KIND_JOB_REQUEST,
+          "Inspect the repository and verify whether the release is ready.",
+          [
+            ["h", seed.projectChannelId],
+            ["a", repoAddress],
+            ["p", taskAgent],
+            ["subject", "Release readiness review"],
+          ],
+          MOCK_IDENTITY_PUBKEY,
+          now - 120,
+          taskId,
+        ),
+        createMockEvent(
+          KIND_JOB_ACCEPTED,
+          observer(1, "turn_started", { source: "channel" }),
+          taskTags,
+          taskAgent,
+          now - 119,
+          "e".repeat(64),
+        ),
+        createMockEvent(
+          KIND_JOB_PROGRESS,
+          observer(2, "acp_read", {
+            method: "session/update",
+            params: {
+              update: {
+                sessionUpdate: "plan",
+                entries: [
+                  { content: "Inspect repository state", status: "completed" },
+                  { content: "Run release checks", status: "in_progress" },
+                ],
+              },
+            },
+          }),
+          taskTags,
+          taskAgent,
+          now - 118,
+          "f".repeat(64),
+        ),
+        createMockEvent(
+          KIND_JOB_PROGRESS,
+          observer(3, "acp_read", {
+            method: "session/update",
+            params: {
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "release-check",
+                toolName: "shell",
+                status: "completed",
+                arguments: { command: "just ci" },
+                result: "All release checks passed",
+              },
+            },
+          }),
+          taskTags,
+          taskAgent,
+          now - 117,
+          "1".repeat(64),
+        ),
+        createMockEvent(
+          KIND_JOB_RESULT,
+          observer(4, "turn_completed", { outcome: "success" }),
+          taskTags,
+          taskAgent,
+          now - 116,
+          "2".repeat(64),
+        ),
+      );
+    }
     events.push(
       createMockEvent(
         KIND_REPO_STATE,
@@ -5126,8 +5252,18 @@ function getMockProjectEventStore(): RelayEvent[] {
  * a repo-address `a` tag instead of a channel `h` tag — store them with the
  * seeded project events so refetches see them. */
 function isMockProjectScopedEvent(event: RelayEvent): boolean {
+  if (
+    event.kind === KIND_REPO_ANNOUNCEMENT ||
+    event.kind === KIND_SHARED_PROJECT
+  )
+    return true;
+
   const hasRepoAddressTag = event.tags.some(
-    (tag) => tag[0] === "a" && (tag[1] ?? "").startsWith("30617:"),
+    (tag) =>
+      tag[0] === "a" &&
+      [KIND_REPO_ANNOUNCEMENT, KIND_SHARED_PROJECT].some((kind) =>
+        (tag[1] ?? "").startsWith(`${kind}:`),
+      ),
   );
   return (
     hasRepoAddressTag &&
@@ -5155,6 +5291,14 @@ function filterMockProjectEvents(filter: MockFilter): RelayEvent[] {
         filter["#a"] &&
         !event.tags.some(
           (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1]),
+        )
+      ) {
+        return false;
+      }
+      if (
+        filter["#h"] &&
+        !event.tags.some(
+          (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
         )
       ) {
         return false;
@@ -10318,6 +10462,47 @@ export function maybeInstallE2eTauriMocks() {
         );
       case "list_project_local_repositories":
         return [];
+      case "pick_project_folder":
+        return {
+          path: "/Users/demo/First Project",
+          name: "First Project",
+          computerId: "00000000-0000-4000-8000-000000000001",
+          computerName: "Demo Mac",
+          gitRepository: true,
+        };
+      case "get_computer_identity":
+        return {
+          computerId: "00000000-0000-4000-8000-000000000001",
+          computerName: "Demo Mac",
+        };
+      case "list_paired_computers":
+        return activeConfig?.mock?.pairedComputers ?? [];
+      case "list_remote_host_directory": {
+        const input = payload as { path?: string };
+        const selectedPath = input.path?.trim() || "/srv/projects";
+        const segments = selectedPath.split("/").filter(Boolean);
+        const name = segments.at(-1) ?? "/";
+        const parent =
+          segments.length > 1
+            ? `/${segments.slice(0, -1).join("/")}`
+            : segments.length === 1
+              ? "/"
+              : null;
+        return {
+          path: selectedPath,
+          name,
+          parent,
+          gitRepository: name === "buzz-discord",
+          directories: [
+            { name: "buzz-discord", path: `${selectedPath}/buzz-discord` },
+            { name: "website", path: `${selectedPath}/website` },
+          ],
+        };
+      }
+      case "start_host_pairing":
+      case "confirm_host_pairing_sas":
+      case "cancel_host_pairing":
+        return null;
       case "push_project_local_repository": {
         const input = payload as { branchName?: string | null };
         const status = window.__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__;

@@ -108,12 +108,14 @@ export function toSearchHit(
 
 export function deriveShellRoute(pathname: string): {
   selectedChannelId: string | null;
+  selectedProjectId: string | null;
   selectedView: AppView;
 } {
   if (pathname.startsWith("/channels/")) {
     const [, , rawChannelId] = pathname.split("/");
     return {
       selectedChannelId: rawChannelId ? decodeURIComponent(rawChannelId) : null,
+      selectedProjectId: null,
       selectedView: "channel",
     };
   }
@@ -121,6 +123,7 @@ export function deriveShellRoute(pathname: string): {
   if (pathname === "/messages/new") {
     return {
       selectedChannelId: null,
+      selectedProjectId: null,
       selectedView: "messages",
     };
   }
@@ -128,6 +131,7 @@ export function deriveShellRoute(pathname: string): {
   if (pathname === "/agents") {
     return {
       selectedChannelId: null,
+      selectedProjectId: null,
       selectedView: "agents",
     };
   }
@@ -135,13 +139,16 @@ export function deriveShellRoute(pathname: string): {
   if (pathname === "/workflows" || pathname.startsWith("/workflows/")) {
     return {
       selectedChannelId: null,
+      selectedProjectId: null,
       selectedView: "workflows",
     };
   }
 
   if (pathname === "/projects" || pathname.startsWith("/projects/")) {
+    const [, , rawProjectId] = pathname.split("/");
     return {
       selectedChannelId: null,
+      selectedProjectId: rawProjectId ? decodeURIComponent(rawProjectId) : null,
       selectedView: "projects",
     };
   }
@@ -149,12 +156,14 @@ export function deriveShellRoute(pathname: string): {
   if (pathname === "/pulse") {
     return {
       selectedChannelId: null,
+      selectedProjectId: null,
       selectedView: "pulse",
     };
   }
 
   return {
     selectedChannelId: null,
+    selectedProjectId: null,
     selectedView: "home",
   };
 }

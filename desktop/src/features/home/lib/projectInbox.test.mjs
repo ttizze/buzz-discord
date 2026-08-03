@@ -11,7 +11,8 @@ import {
 
 const OWNER = "a".repeat(64);
 const REVIEWER = "b".repeat(64);
-const REPO_ADDRESS = `30617:${OWNER}:buzz`;
+const REPO_ADDRESS = `30623:${OWNER}:buzz`;
+const LEGACY_REPO_ADDRESS = `30617:${OWNER}:buzz`;
 const PR_ID = "c".repeat(64);
 const ISSUE_ID = "d".repeat(64);
 
@@ -55,6 +56,10 @@ const issue = {
 
 test("recognizes project roots and project thread activity", () => {
   assert.equal(isProjectInboxItem(feedItem()), true);
+  assert.equal(
+    isProjectInboxItem(feedItem({ tags: [["a", LEGACY_REPO_ADDRESS]] })),
+    true,
+  );
   assert.equal(
     isProjectInboxItem(
       feedItem({

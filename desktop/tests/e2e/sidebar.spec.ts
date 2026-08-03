@@ -281,7 +281,7 @@ test("channel context menu only shows owner actions to the owner", async ({
 test("channel context menu explains when owner actions are loading", async ({
   page,
 }) => {
-  await installMockBridge(page, { channelMembersReadDelayMs: 500 });
+  await installMockBridge(page, { channelMembersReadDelayMs: 5_000 });
   await page.goto("/");
 
   await page.getByTestId("channel-general").click({ button: "right" });

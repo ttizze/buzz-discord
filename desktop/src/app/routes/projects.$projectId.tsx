@@ -9,6 +9,11 @@ const ProjectDetailScreen = React.lazy(async () => {
   return { default: module.ProjectDetailScreen };
 });
 
+const ProjectAgentTaskScreen = React.lazy(async () => {
+  const module = await import("@/features/projects/ui/ProjectAgentTaskScreen");
+  return { default: module.ProjectAgentTaskScreen };
+});
+
 export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectDetailRouteComponent,
   validateSearch: (search: Record<string, unknown>) => ({
@@ -19,22 +24,27 @@ export const Route = createFileRoute("/projects/$projectId")({
         ? search.pullRequestId
         : undefined,
     issueId: typeof search.issueId === "string" ? search.issueId : undefined,
+    taskId: typeof search.taskId === "string" ? search.taskId : undefined,
   }),
 });
 
 function ProjectDetailRouteComponent() {
   usePreviewFeatureWarning("projects");
   const { projectId } = Route.useParams();
-  const { commitHash, pullRequestId, issueId } = Route.useSearch();
+  const { commitHash, pullRequestId, issueId, taskId } = Route.useSearch();
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="projects" />}>
-      <ProjectDetailScreen
-        commitHash={commitHash}
-        issueId={issueId}
-        projectId={projectId}
-        pullRequestId={pullRequestId}
-      />
+      {taskId ? (
+        <ProjectAgentTaskScreen projectId={projectId} taskId={taskId} />
+      ) : (
+        <ProjectDetailScreen
+          commitHash={commitHash}
+          issueId={issueId}
+          projectId={projectId}
+          pullRequestId={pullRequestId}
+        />
+      )}
     </React.Suspense>
   );
 }

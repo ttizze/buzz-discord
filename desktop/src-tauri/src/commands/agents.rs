@@ -17,7 +17,6 @@ use crate::{
     relay::{relay_ws_url_with_override, sync_managed_agent_profile},
     util::now_iso,
 };
-
 /// Read the workspace owner pubkey without holding the lock. Used to populate `BUZZ_ACP_AGENT_OWNER`
 /// as a fallback for legacy agent records that have no NIP-OA `auth_tag`.
 pub(super) fn workspace_owner_hex(state: &AppState) -> Result<String, String> {
@@ -52,7 +51,8 @@ pub(super) fn retain_managed_agent_pending(
         // Shared engine with the boot-time reconcile: projection content diff
         // (no republish for runtime-only churn) + monotonic created_at bump
         // past the retained head (NIP-AP step 3).
-        retain_agent_record(&conn, &scope.owner_keys, record).map(|_| ())
+        let computer_id = crate::computer_id(app)?;
+        retain_agent_record(&conn, &scope.owner_keys, record, Some(&computer_id)).map(|_| ())
     })();
     if let Err(e) = result {
         eprintln!("buzz-desktop: agent-retain: {e}");

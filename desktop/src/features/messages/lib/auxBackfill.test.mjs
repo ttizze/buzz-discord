@@ -27,7 +27,7 @@ function hex(char) {
   return char.repeat(64);
 }
 
-test("collects content-kind message ids (stream, v2, diff, system, jobs)", () => {
+test("collects channel timeline ids and excludes project agent tasks", () => {
   const events = [
     event(hex("1"), 9), // stream message
     event(hex("2"), 40002), // v2 stream message
@@ -40,7 +40,6 @@ test("collects content-kind message ids (stream, v2, diff, system, jobs)", () =>
     hex("2"),
     hex("3"),
     hex("4"),
-    hex("5"),
   ]);
 });
 

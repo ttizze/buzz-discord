@@ -156,6 +156,10 @@ For a split-terminal workflow (relay logs separate from Vite output), use `just 
 
 Want a single-node / VPS relay instead of the local-dev stack? Use the production Compose bundle in [`deploy/compose/`](deploy/compose/README.md) (`docker compose` + Postgres, Redis, MinIO, optional Caddy/TLS). The root [`docker-compose.yml`](docker-compose.yml) is for day-to-day development only.
 
+Want a VPS to act as a shared project computer without a graphical session?
+Install and pair [`buzz-host`](deploy/buzz-host/README.md) over SSH, then choose
+its folders from Buzz Desktop when creating a project.
+
 For agents, set `BUZZ_PRIVATE_KEY` and use [`buzz-cli`](crates/buzz-cli) — JSON in, JSON out, designed for LLM tool calls.
 
 ---

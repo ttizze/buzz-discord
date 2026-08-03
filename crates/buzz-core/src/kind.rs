@@ -145,6 +145,8 @@ pub const RESULT_GATED_KINDS: &[u32] = &[KIND_DM_VISIBILITY, KIND_AGENT_TURN_MET
 /// storage-layer search defense does not apply to them.
 pub const P_GATED_KINDS: &[u32] = &[
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_HOST_RPC_REQUEST,
+    KIND_HOST_RPC_RESPONSE,
     KIND_MEMBER_ADDED_NOTIFICATION,
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_GIFT_WRAP,
@@ -435,6 +437,15 @@ pub const KIND_WORKFLOW_DEF: u32 = 30620;
 /// `hidden_at` per viewer; this is the only Nostr-visible projection of it.
 pub const KIND_DM_VISIBILITY: u32 = 30622;
 
+/// Buzz shared project (parameterized replaceable, d-tag = project id).
+///
+/// A project names a workspace hosted by a computer connected to the
+/// community. The workspace may contain a Git repository, but Git is not the
+/// project's identity or a requirement.
+pub const KIND_SHARED_PROJECT: u32 = 30623;
+/// Owner-authored paired-computer registration (d-tag = computer UUID).
+pub const KIND_COMPUTER_REGISTRATION: u32 = 30179;
+
 /// Lower bound of the NIP-33 parameterized replaceable range (30000–39999).
 pub const PARAM_REPLACEABLE_KIND_MIN: u32 = 30000;
 /// Upper bound of the NIP-33 parameterized replaceable range (30000–39999).
@@ -450,6 +461,10 @@ pub const EPHEMERAL_KIND_MAX: u32 = 29999;
 pub const KIND_PRESENCE_UPDATE: u32 = 20001;
 /// NIP-AB: Device pairing event. Ephemeral — relay may discard after delivery.
 pub const KIND_PAIRING: u32 = 24134;
+/// Encrypted owner-to-computer RPC request. P-gated and never stored.
+pub const KIND_HOST_RPC_REQUEST: u32 = 24244;
+/// Encrypted computer-to-owner RPC response. P-gated and never stored.
+pub const KIND_HOST_RPC_RESPONSE: u32 = 24245;
 /// Ephemeral: typing indicator for a channel.
 pub const KIND_TYPING_INDICATOR: u32 = 20002;
 /// Ephemeral: owner-scoped encrypted agent observer telemetry and control frame.
@@ -633,6 +648,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_PERSONA,
     KIND_TEAM,
     KIND_MANAGED_AGENT,
+    KIND_COMPUTER_REGISTRATION,
     KIND_TEAM_CATALOG,
     KIND_REPORT,
     KIND_PRODUCT_FEEDBACK,
@@ -674,6 +690,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_HUDDLE_REACTION,
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
+    KIND_HOST_RPC_REQUEST,
+    KIND_HOST_RPC_RESPONSE,
     KIND_AGENT_OBSERVER_FRAME,
     KIND_HTTP_AUTH,
     KIND_STREAM_MESSAGE,
@@ -739,6 +757,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_GIT_STATUS_MERGED,
     KIND_GIT_STATUS_CLOSED,
     KIND_GIT_STATUS_DRAFT,
+    KIND_SHARED_PROJECT,
 ];
 
 /// Returns `true` if `kind` is in the ephemeral range (20000–29999).
@@ -836,6 +855,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_SHARED_PROJECT)); // 30623 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_THREAD_SUMMARY)); // 39005 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WINDOW_BOUNDS)); // 39006 ∈ 30000–39999
 

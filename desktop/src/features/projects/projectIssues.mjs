@@ -140,8 +140,10 @@ export function buildGitIssueTags({
   title,
   labels = [],
 }) {
-  if (!repoAddress.startsWith("30617:")) {
-    throw new Error("Issue repo address must reference a kind:30617 repo.");
+  if (!/^(?:30617|30623):/.test(repoAddress)) {
+    throw new Error(
+      "Issue repo address must reference a kind:30617 repo or kind:30623 shared project.",
+    );
   }
   if (!/^[a-fA-F0-9]{64}$/.test(repoOwner)) {
     throw new Error("Repo owner must be 64 hex characters.");
