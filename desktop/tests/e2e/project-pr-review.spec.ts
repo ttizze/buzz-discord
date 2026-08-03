@@ -22,12 +22,7 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
 async function openBuzzProject(page: import("@playwright/test").Page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: /^Repositories/ }).click();
-  const projectEntry = page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first();
+  const projectEntry = page.getByTestId("project-sidebar-buzz");
   await expect(projectEntry).toBeVisible({ timeout: 10_000 });
   await projectEntry.click();
 }
@@ -810,9 +805,9 @@ test("project pull requests preserve partial results from batched queries", asyn
     workItemFilters.every((filter) => (filter["#a"]?.length ?? 0) > 1),
   ).toBe(true);
   const expectedRepoAddresses = [
-    `30617:${DEFAULT_MOCK_PUBKEY}:buzz`,
-    `30617:${TEST_IDENTITIES.alice.pubkey}:relay-tools`,
-    `30617:${TEST_IDENTITIES.bob.pubkey}:design-system`,
+    `30623:${DEFAULT_MOCK_PUBKEY}:buzz`,
+    `30623:${TEST_IDENTITIES.alice.pubkey}:relay-tools`,
+    `30623:${TEST_IDENTITIES.bob.pubkey}:design-system`,
   ].sort();
   for (const filter of workItemFilters) {
     expect([...(filter["#a"] ?? [])].sort()).toEqual(expectedRepoAddresses);
@@ -954,7 +949,7 @@ test("project subsections do not paint backgrounds behind list or grid items", a
   await page.getByTestId("open-projects-view").click();
 
   for (const section of ["Repositories", "Pull Requests", "Issues"]) {
-    await page.getByRole("button", { name: section, exact: true }).click();
+    await page.getByRole("button", { name: new RegExp(`^${section}`) }).click();
     await page.getByRole("button", { name: "List layout" }).click();
 
     const listContainer = page.getByTestId("projects-list-container");
