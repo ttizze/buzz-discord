@@ -14,6 +14,12 @@ export type AuthSession =
       user: Readonly<{ email: string; displayName: string }>;
     }>;
 
+export type Server = Readonly<{
+  id: string;
+  name: string;
+  role: "owner" | "admin" | "member";
+}>;
+
 const e2eApiOrigin =
   import.meta.env.MODE === "e2e"
     ? new URLSearchParams(window.location.search).get("apiOrigin")
@@ -74,6 +80,41 @@ function parseAuthSession(value: unknown): AuthSession {
   };
 }
 
+function parseServer(value: unknown): Server {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    !["owner", "admin", "member"].includes(String(value.role))
+  ) {
+    throw new Error("Buzzcode API returned an invalid Server");
+  }
+  return { id: value.id, name: value.name, role: value.role as Server["role"] };
+}
+
+export async function listServers(): Promise<readonly Server[]> {
+  const response = await fetch(`${apiOrigin}/api/servers`, {
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value))
+    throw new Error("Buzzcode API returned an invalid Server list");
+  return value.map(parseServer);
+}
+
+export async function createServer(name: string): Promise<Server> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/servers`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+    parseServer,
+  );
+}
+
 export function loginUrl(): string {
   return `${apiOrigin}/api/auth/login`;
 }
@@ -93,30 +134,46 @@ export async function logout(): Promise<void> {
   if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
 }
 
-export async function readDurableState(): Promise<DurableState> {
+export async function readDurableState(
+  serverId: string,
+): Promise<DurableState> {
   return parseResponse(
-    await fetch(`${apiOrigin}/api/bootstrap`, { credentials: "include" }),
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/bootstrap`,
+      {
+        credentials: "include",
+      },
+    ),
     parseDurableState,
   );
 }
 
-export async function writeDurableState(value: string): Promise<DurableState> {
+export async function writeDurableState(
+  serverId: string,
+  value: string,
+): Promise<DurableState> {
   return parseResponse(
-    await fetch(`${apiOrigin}/api/bootstrap`, {
-      method: "PUT",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ value }),
-    }),
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/bootstrap`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value }),
+      },
+    ),
     parseDurableState,
   );
 }
 
 export function subscribeToServerEvents(
+  serverId: string,
   onEvent: (event: ServerEvent) => void,
   onConnectionChange: (connected: boolean) => void,
 ): () => void {
-  const websocket = new WebSocket(`${websocketOrigin}/api/events`);
+  const websocket = new WebSocket(
+    `${websocketOrigin}/api/servers/${encodeURIComponent(serverId)}/events`,
+  );
   websocket.addEventListener("open", () => onConnectionChange(true));
   websocket.addEventListener("close", () => onConnectionChange(false));
   websocket.addEventListener("message", (message) => {

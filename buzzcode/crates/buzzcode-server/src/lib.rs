@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{Query, State, WebSocketUpgrade, ws::Message},
+    extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -26,7 +26,6 @@ use tower_http::{
 };
 use url::Url;
 
-const DURABLE_VALUE_KEY: &str = "durable-value";
 const SESSION_COOKIE: &str = "buzzcode_session";
 
 /// OIDC and browser settings required by the Buzzcode server.
@@ -97,7 +96,19 @@ struct DurableState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerEvent {
-    DurableStateChanged { state: DurableState },
+    DurableStateChanged {
+        #[serde(skip)]
+        server_id: String,
+        state: DurableState,
+    },
+}
+
+impl ServerEvent {
+    fn server_id(&self) -> &str {
+        match self {
+            Self::DurableStateChanged { server_id, .. } => server_id,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -126,6 +137,19 @@ struct AuthCallback {
     state: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateServer {
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerSummary {
+    id: String,
+    name: String,
+    role: &'static str,
+}
+
 #[derive(Debug, Error)]
 enum ApiError {
     #[error("authentication is required")]
@@ -134,6 +158,8 @@ enum ApiError {
     InvalidAuthentication,
     #[error("identity provider request failed")]
     IdentityProvider,
+    #[error("the request is invalid")]
+    InvalidRequest,
     #[error("database operation failed")]
     Database(#[from] sqlx::Error),
 }
@@ -162,7 +188,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::Unauthorized | Self::IdentityProvider => StatusCode::UNAUTHORIZED,
-            Self::InvalidAuthentication => StatusCode::BAD_REQUEST,
+            Self::InvalidAuthentication | Self::InvalidRequest => StatusCode::BAD_REQUEST,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         if status.is_server_error() {
@@ -231,8 +257,12 @@ pub async fn serve(
         .route("/api/auth/callback", get(auth_callback))
         .route("/api/auth/session", get(read_session))
         .route("/api/auth/logout", post(logout))
-        .route("/api/bootstrap", get(read_state).put(write_state))
-        .route("/api/events", get(events))
+        .route("/api/servers", get(list_servers).post(create_server))
+        .route(
+            "/api/servers/{server_id}/bootstrap",
+            get(read_state).put(write_state),
+        )
+        .route("/api/servers/{server_id}/events", get(events))
         .layer(
             CorsLayer::new()
                 .allow_origin(app_origin)
@@ -455,15 +485,90 @@ fn require_origin(auth: &AuthConfig, headers: &HeaderMap) -> Result<(), ApiError
     Ok(())
 }
 
-async fn require_session(pool: &PgPool, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn require_session(pool: &PgPool, headers: &HeaderMap) -> Result<String, ApiError> {
     let token = cookie_value(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
-    let authenticated = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM sessions WHERE token_hash = $1 AND expires_at > NOW())",
+    let subject = sqlx::query_scalar::<_, String>(
+        "SELECT oidc_subject FROM sessions WHERE token_hash = $1 AND expires_at > NOW()",
     )
     .bind(token_hash(&token))
+    .fetch_optional(pool)
+    .await?
+    .ok_or(ApiError::Unauthorized)?;
+    Ok(subject)
+}
+
+async fn list_servers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ServerSummary>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    let rows = sqlx::query_as::<_, (String, String, bool)>(
+        "SELECT servers.id, servers.name, servers.owner_subject = $1 AS is_owner \
+         FROM servers LEFT JOIN server_members ON server_members.server_id = servers.id \
+         AND server_members.oidc_subject = $1 \
+         WHERE servers.owner_subject = $1 OR server_members.oidc_subject = $1 \
+         ORDER BY servers.created_at, servers.id",
+    )
+    .bind(subject)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, name, is_owner)| ServerSummary {
+                id,
+                name,
+                role: if is_owner { "owner" } else { "member" },
+            })
+            .collect(),
+    ))
+}
+
+async fn create_server(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<CreateServer>,
+) -> Result<(StatusCode, Json<ServerSummary>), ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let id = CsrfToken::new_random().secret().to_owned();
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("INSERT INTO servers (id, name, owner_subject) VALUES ($1, $2, $3)")
+        .bind(&id)
+        .bind(name)
+        .bind(subject)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("INSERT INTO server_state (server_id) VALUES ($1)")
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ServerSummary {
+            id,
+            name: name.to_owned(),
+            role: "owner",
+        }),
+    ))
+}
+
+async fn require_member(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
+    let allowed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM servers LEFT JOIN server_members \
+         ON server_members.server_id = servers.id AND server_members.oidc_subject = $1 \
+         WHERE servers.id = $2 AND (servers.owner_subject = $1 OR server_members.oidc_subject = $1))",
+    )
+    .bind(subject)
+    .bind(server_id)
     .fetch_one(pool)
     .await?;
-    if !authenticated {
+    if !allowed {
         return Err(ApiError::Unauthorized);
     }
     Ok(())
@@ -471,37 +576,42 @@ async fn require_session(pool: &PgPool, headers: &HeaderMap) -> Result<(), ApiEr
 
 async fn read_state(
     State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<DurableState>, ApiError> {
     require_origin(&state.auth, &headers)?;
-    require_session(&state.pool, &headers).await?;
-    let value = sqlx::query_scalar::<_, String>("SELECT value FROM bootstrap_state WHERE key = $1")
-        .bind(DURABLE_VALUE_KEY)
-        .fetch_one(&state.pool)
-        .await?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let value =
+        sqlx::query_scalar::<_, String>("SELECT value FROM server_state WHERE server_id = $1")
+            .bind(server_id)
+            .fetch_one(&state.pool)
+            .await?;
     Ok(Json(DurableState { value }))
 }
 
 async fn write_state(
     State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
     headers: HeaderMap,
     Json(input): Json<DurableState>,
 ) -> Result<Json<DurableState>, ApiError> {
     require_origin(&state.auth, &headers)?;
-    require_session(&state.pool, &headers).await?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
     let value = input.value.trim().to_owned();
     let saved = DurableState {
         value: sqlx::query_scalar::<_, String>(
-            "INSERT INTO bootstrap_state (key, value) VALUES ($1, $2) \
-             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() \
-             RETURNING value",
+            "UPDATE server_state SET value = $2, updated_at = NOW() \
+             WHERE server_id = $1 RETURNING value",
         )
-        .bind(DURABLE_VALUE_KEY)
+        .bind(&server_id)
         .bind(value)
         .fetch_one(&state.pool)
         .await?,
     };
     let _ = state.changes.send(ServerEvent::DurableStateChanged {
+        server_id,
         state: saved.clone(),
     });
     Ok(Json(saved))
@@ -510,16 +620,21 @@ async fn write_state(
 async fn events(
     websocket: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     require_origin(&state.auth, &headers)?;
-    require_session(&state.pool, &headers).await?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
     Ok(websocket.on_upgrade(move |socket| async move {
         let (mut sender, _) = socket.split();
         let mut changes = state.changes.subscribe();
         loop {
             match changes.recv().await {
                 Ok(event) => {
+                    if event.server_id() != server_id {
+                        continue;
+                    }
                     let Ok(payload) = serde_json::to_string(&event) else {
                         tracing::error!("failed to serialize server event");
                         continue;
@@ -552,6 +667,7 @@ mod tests {
     #[test]
     fn state_event_uses_the_public_json_contract() {
         let event = ServerEvent::DurableStateChanged {
+            server_id: "server-1".to_owned(),
             state: DurableState {
                 value: "saved".to_owned(),
             },

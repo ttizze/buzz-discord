@@ -13,6 +13,7 @@ const jwk = publicKey.export({ format: "jwk" });
 const keyId = "buzzcode-e2e";
 const codes = new Map();
 let nextTokenMode = "valid";
+let nextUser = "owner";
 
 function json(response, status, value) {
   response.writeHead(status, { "content-type": "application/json" });
@@ -23,19 +24,20 @@ function base64Url(value) {
   return Buffer.from(value).toString("base64url");
 }
 
-function idToken(nonce, mode) {
+function idToken(nonce, mode, user) {
   const now = Math.floor(Date.now() / 1000);
+  const email = `${user}@example.com`;
   const header = base64Url(JSON.stringify({ alg: "RS256", kid: keyId }));
   const claims = {
     iss: issuer,
-    sub: "rauthy-user-1",
+    sub: `rauthy-${user}`,
     aud: clientId,
     exp: mode === "expired" ? now - 60 : now + 300,
     iat: now,
     nonce,
-    email: "owner@example.com",
+    email,
     email_verified: true,
-    preferred_username: "owner",
+    preferred_username: user,
   };
   if (mode === "missing-email") delete claims.email;
   const payload = base64Url(JSON.stringify(claims));
@@ -81,6 +83,7 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === "/test/next-token") {
     nextTokenMode = url.searchParams.get("mode") ?? "valid";
+    nextUser = url.searchParams.get("user") ?? "owner";
     response.writeHead(204);
     response.end();
     return;
@@ -107,8 +110,10 @@ const server = createServer(async (request, response) => {
       mode: nextTokenMode,
       nonce: form.get("nonce"),
       redirectUri: form.get("redirect_uri"),
+      user: nextUser,
     });
     nextTokenMode = "valid";
+    nextUser = "owner";
     const callback = new URL(form.get("redirect_uri"));
     callback.searchParams.set("code", code);
     callback.searchParams.set("state", form.get("state"));
@@ -137,7 +142,7 @@ const server = createServer(async (request, response) => {
       access_token: "fake-access-token",
       token_type: "Bearer",
       expires_in: 300,
-      id_token: idToken(code.nonce, code.mode),
+      id_token: idToken(code.nonce, code.mode, code.user),
       scope: "openid profile email",
     });
     return;

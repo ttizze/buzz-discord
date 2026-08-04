@@ -18,6 +18,8 @@ async function signIn(page: Page): Promise<void> {
   await expect(page.getByTestId("signed-in-user")).toHaveText(
     "owner@example.com",
   );
+  await page.getByLabel("Server name").fill("Persistence Server");
+  await page.getByRole("button", { name: "Create Server" }).click();
 }
 
 test("persists a value, broadcasts it, and reads it after restart", async ({

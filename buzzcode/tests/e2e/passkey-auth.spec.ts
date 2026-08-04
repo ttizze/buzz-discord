@@ -45,7 +45,9 @@ async function completeOidcFlow(
 test("rejects unauthenticated access to protected application data", async ({
   request,
 }) => {
-  const response = await request.get(`${harness.apiOrigin}/api/bootstrap`);
+  const response = await request.get(
+    `${harness.apiOrigin}/api/servers/unavailable/bootstrap`,
+  );
   expect(response.status()).toBe(401);
 });
 
