@@ -33,7 +33,7 @@ A project owned by one user that connects the user's local folder to a local age
 _Avoid_: Private server project
 
 **Server Project**:
-A project belonging to one server that groups channels and selects a Git repository on the server's shared remote environment. Creating one requires a connected Agent Host and a valid repository; if the host goes offline, its channels remain writable while remote agents become unavailable. It never connects to a member's local computer and does not isolate its repository from other agents on the same server VPS.
+A project belonging to one server that groups channels and selects one Remote Environment plus a Git repository on that VPS. Creating one requires an Online Buzzcode Host and a valid repository; if its Host goes Offline, its channels remain writable while remote agents become unavailable. It never connects to a member's local computer and does not isolate its repository from other agents on the same VPS.
 _Avoid_: Personal project
 
 **Open Project**:
@@ -45,19 +45,19 @@ A server project whose channels and searchable conversation history are availabl
 _Avoid_: Sandbox, separate server
 
 **Archived Project**:
-A former server project whose remote environment and agents are disconnected and whose channels are read-only but remain searchable. A server project with message history is archived rather than deleted.
+A former server project whose remote execution and agents are disconnected and whose channels are read-only but remain searchable. Archiving it does not disconnect its Remote Environment from other projects. A server project with message history is archived rather than deleted.
 _Avoid_: Deleted project, inactive host
 
 **Remote Environment**:
-The single VPS that may be dedicated to a server and shared by all projects and remote agents in that server. Version 1 permits at most one remote environment per server; project folders are working contexts rather than security boundaries.
+One admin-provided VPS registered to exactly one server and represented by one Buzzcode Host. A server may have multiple remote environments, and each server project selects exactly one of them. One remote environment may serve multiple projects; their folders are working contexts rather than security boundaries.
 _Avoid_: Member computer, local environment
 
-**Agent Host**:
-The machine-side Buzzcode service that establishes an outbound ACP connection and exposes authorized folders and agent capabilities. The desktop app runs it locally for personal use, while a VPS host belongs to exactly one server and may expose separate folders to multiple projects in that server.
+**Buzzcode Host**:
+The `buzzcode-host` machine-side service that establishes an outbound ACP connection and exposes authorized folders and agent capabilities. The desktop app runs it locally for personal use, while each VPS Host represents one Remote Environment, belongs to exactly one server, and may expose separate folders to multiple projects assigned to that VPS.
 _Avoid_: SSH target, central agent
 
 **ACP Connection**:
-The stable ACP v1 JSON-RPC lifecycle used end to end for agent initialization, sessions, prompts, updates, permissions, and cancellation. Buzzcode carries ACP over an authenticated outbound WebSocket between the service and Agent Host, and the Host bridges it to the agent's standard ACP stdio transport.
+The stable ACP v1 JSON-RPC lifecycle used end to end for agent initialization, sessions, prompts, updates, permissions, and cancellation. Buzzcode carries ACP over an authenticated outbound WebSocket between the service and Buzzcode Host, and the Host bridges it to the agent's standard ACP stdio transport.
 _Avoid_: Nostr event, proprietary agent protocol, ACP v2 draft
 
 **Channel**:
@@ -89,7 +89,7 @@ An agent running on a user's computer for direct messages and personal projects.
 _Avoid_: Remote agent
 
 **Remote Agent**:
-A normal agent process running on a server-dedicated VPS with shell, file, and browser capabilities available on that VPS. A project folder supplies its starting context but does not prevent access to other VPS resources.
+A normal agent process running on the Remote Environment selected by a server project, with shell, file, and browser capabilities available on that VPS. A project folder supplies its starting context but does not prevent access to other resources on the same VPS; it has no implicit access to another Remote Environment.
 _Avoid_: Local agent
 
 **Agent Mention**:
