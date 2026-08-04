@@ -101,12 +101,22 @@ enum ServerEvent {
         server_id: String,
         state: DurableState,
     },
+    MembershipChanged {
+        #[serde(skip)]
+        server_id: String,
+    },
+    ServerDeleted {
+        #[serde(skip)]
+        server_id: String,
+    },
 }
 
 impl ServerEvent {
     fn server_id(&self) -> &str {
         match self {
-            Self::DurableStateChanged { server_id, .. } => server_id,
+            Self::DurableStateChanged { server_id, .. }
+            | Self::MembershipChanged { server_id }
+            | Self::ServerDeleted { server_id } => server_id,
         }
     }
 }
@@ -142,6 +152,54 @@ struct CreateServer {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateInvitation {
+    email: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Invitation {
+    token: String,
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcceptInvitation {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateMemberRole {
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferOwnership {
+    new_owner_subject: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemberSummary {
+    subject: String,
+    email: String,
+    display_name: String,
+    role: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditEntry {
+    id: i64,
+    actor_subject: String,
+    action: String,
+    target_subject: Option<String>,
+    detail: serde_json::Value,
+    created_at: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerSummary {
@@ -160,6 +218,12 @@ enum ApiError {
     IdentityProvider,
     #[error("the request is invalid")]
     InvalidRequest,
+    #[error("the operation is forbidden")]
+    Forbidden,
+    #[error("the requested resource was not found")]
+    NotFound,
+    #[error("the request conflicts with current state")]
+    Conflict,
     #[error("database operation failed")]
     Database(#[from] sqlx::Error),
 }
@@ -189,6 +253,9 @@ impl IntoResponse for ApiError {
         let status = match self {
             Self::Unauthorized | Self::IdentityProvider => StatusCode::UNAUTHORIZED,
             Self::InvalidAuthentication | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Conflict => StatusCode::CONFLICT,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         if status.is_server_error() {
@@ -258,6 +325,25 @@ pub async fn serve(
         .route("/api/auth/session", get(read_session))
         .route("/api/auth/logout", post(logout))
         .route("/api/servers", get(list_servers).post(create_server))
+        .route("/api/invitations/accept", post(accept_invitation))
+        .route(
+            "/api/servers/{server_id}",
+            axum::routing::delete(delete_server),
+        )
+        .route(
+            "/api/servers/{server_id}/invitations",
+            post(create_invitation),
+        )
+        .route("/api/servers/{server_id}/members", get(list_members))
+        .route(
+            "/api/servers/{server_id}/members/{member_subject}",
+            axum::routing::patch(update_member_role),
+        )
+        .route(
+            "/api/servers/{server_id}/owner",
+            axum::routing::put(transfer_ownership),
+        )
+        .route("/api/servers/{server_id}/audit", get(list_audit))
         .route(
             "/api/servers/{server_id}/bootstrap",
             get(read_state).put(write_state),
@@ -503,8 +589,9 @@ async fn list_servers(
 ) -> Result<Json<Vec<ServerSummary>>, ApiError> {
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
-    let rows = sqlx::query_as::<_, (String, String, bool)>(
-        "SELECT servers.id, servers.name, servers.owner_subject = $1 AS is_owner \
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT servers.id, servers.name, \
+         CASE WHEN servers.owner_subject = $1 THEN 'owner' ELSE server_members.role END AS role \
          FROM servers LEFT JOIN server_members ON server_members.server_id = servers.id \
          AND server_members.oidc_subject = $1 \
          WHERE servers.owner_subject = $1 OR server_members.oidc_subject = $1 \
@@ -515,13 +602,370 @@ async fn list_servers(
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, name, is_owner)| ServerSummary {
+            .map(|(id, name, role)| ServerSummary {
                 id,
                 name,
-                role: if is_owner { "owner" } else { "member" },
+                role: match role.as_str() {
+                    "owner" => "owner",
+                    "admin" => "admin",
+                    _ => "member",
+                },
             })
             .collect(),
     ))
+}
+
+async fn server_role(
+    pool: &PgPool,
+    subject: &str,
+    server_id: &str,
+) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar(
+        "SELECT CASE WHEN servers.owner_subject = $1 THEN 'owner' ELSE server_members.role END \
+         FROM servers LEFT JOIN server_members ON server_members.server_id = servers.id \
+         AND server_members.oidc_subject = $1 \
+         WHERE servers.id = $2 \
+         AND (servers.owner_subject = $1 OR server_members.oidc_subject = $1)",
+    )
+    .bind(subject)
+    .bind(server_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn require_manager(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
+    match server_role(pool, subject, server_id).await?.as_deref() {
+        Some("owner" | "admin") => Ok(()),
+        Some(_) => Err(ApiError::Forbidden),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
+async fn require_owner(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
+    match server_role(pool, subject, server_id).await?.as_deref() {
+        Some("owner") => Ok(()),
+        Some(_) => Err(ApiError::Forbidden),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
+async fn create_invitation(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<CreateInvitation>,
+) -> Result<(StatusCode, Json<Invitation>), ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_manager(&state.pool, &subject, &server_id).await?;
+    let email = input.email.trim().to_lowercase();
+    if email.len() > 320
+        || !email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        })
+    {
+        return Err(ApiError::InvalidRequest);
+    }
+    let token = CsrfToken::new_random().secret().to_owned();
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("DELETE FROM server_invitations WHERE expires_at <= NOW()")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "INSERT INTO server_invitations (token_hash, server_id, email, invited_by_subject) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(token_hash(&token))
+    .bind(&server_id)
+    .bind(&email)
+    .bind(&subject)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+         VALUES ($1, $2, 'invitation.created', jsonb_build_object('email', $3::TEXT))",
+    )
+    .bind(&server_id)
+    .bind(&subject)
+    .bind(&email)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok((StatusCode::CREATED, Json(Invitation { token, email })))
+}
+
+async fn accept_invitation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<AcceptInvitation>,
+) -> Result<(StatusCode, Json<ServerSummary>), ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    let email = sqlx::query_scalar::<_, String>("SELECT email FROM users WHERE oidc_subject = $1")
+        .bind(&subject)
+        .fetch_one(&state.pool)
+        .await?;
+    let mut transaction = state.pool.begin().await?;
+    let invitation = sqlx::query_as::<_, (String, String)>(
+        "SELECT server_id, email FROM server_invitations \
+         WHERE token_hash = $1 AND expires_at > NOW() FOR UPDATE",
+    )
+    .bind(token_hash(input.token.trim()))
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    if !invitation.1.eq_ignore_ascii_case(&email) {
+        return Err(ApiError::Forbidden);
+    }
+    let already_member = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM servers LEFT JOIN server_members \
+         ON server_members.server_id = servers.id AND server_members.oidc_subject = $1 \
+         WHERE servers.id = $2 AND (servers.owner_subject = $1 OR server_members.oidc_subject = $1))",
+    )
+    .bind(&subject)
+    .bind(&invitation.0)
+    .fetch_one(&mut *transaction)
+    .await?;
+    if already_member {
+        return Err(ApiError::Conflict);
+    }
+    sqlx::query("DELETE FROM server_invitations WHERE token_hash = $1")
+        .bind(token_hash(input.token.trim()))
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "INSERT INTO server_members (server_id, oidc_subject, role) VALUES ($1, $2, 'member')",
+    )
+    .bind(&invitation.0)
+    .bind(&subject)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO server_audit_log (server_id, actor_subject, action, target_subject) \
+         VALUES ($1, $2, 'invitation.accepted', $2)",
+    )
+    .bind(&invitation.0)
+    .bind(&subject)
+    .execute(&mut *transaction)
+    .await?;
+    let server =
+        sqlx::query_as::<_, (String, String)>("SELECT id, name FROM servers WHERE id = $1")
+            .bind(&invitation.0)
+            .fetch_one(&mut *transaction)
+            .await?;
+    transaction.commit().await?;
+    let _ = state.changes.send(ServerEvent::MembershipChanged {
+        server_id: invitation.0,
+    });
+    Ok((
+        StatusCode::CREATED,
+        Json(ServerSummary {
+            id: server.0,
+            name: server.1,
+            role: "member",
+        }),
+    ))
+}
+
+async fn list_members(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<MemberSummary>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let members = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT users.oidc_subject, users.email, users.display_name, 'owner' AS role \
+         FROM servers JOIN users ON users.oidc_subject = servers.owner_subject \
+         WHERE servers.id = $1 \
+         UNION ALL \
+         SELECT users.oidc_subject, users.email, users.display_name, server_members.role \
+         FROM server_members JOIN users ON users.oidc_subject = server_members.oidc_subject \
+         WHERE server_members.server_id = $1 \
+         ORDER BY role DESC, display_name",
+    )
+    .bind(server_id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(subject, email, display_name, role)| MemberSummary {
+        subject,
+        email,
+        display_name,
+        role,
+    })
+    .collect();
+    Ok(Json(members))
+}
+
+async fn update_member_role(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, member_subject)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<UpdateMemberRole>,
+) -> Result<Json<MemberSummary>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_manager(&state.pool, &subject, &server_id).await?;
+    if !matches!(input.role.as_str(), "admin" | "member") {
+        return Err(ApiError::InvalidRequest);
+    }
+    let mut transaction = state.pool.begin().await?;
+    let member = sqlx::query_as::<_, (String, String)>(
+        "UPDATE server_members SET role = $3 \
+         WHERE server_id = $1 AND oidc_subject = $2 \
+         RETURNING (SELECT email FROM users WHERE oidc_subject = $2), \
+         (SELECT display_name FROM users WHERE oidc_subject = $2)",
+    )
+    .bind(&server_id)
+    .bind(&member_subject)
+    .bind(&input.role)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    sqlx::query(
+        "INSERT INTO server_audit_log \
+         (server_id, actor_subject, action, target_subject, detail) \
+         VALUES ($1, $2, 'member.role_changed', $3, jsonb_build_object('role', $4::TEXT))",
+    )
+    .bind(&server_id)
+    .bind(&subject)
+    .bind(&member_subject)
+    .bind(&input.role)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    let _ = state
+        .changes
+        .send(ServerEvent::MembershipChanged { server_id });
+    Ok(Json(MemberSummary {
+        subject: member_subject,
+        email: member.0,
+        display_name: member.1,
+        role: input.role,
+    }))
+}
+
+async fn transfer_ownership(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<TransferOwnership>,
+) -> Result<StatusCode, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_owner(&state.pool, &subject, &server_id).await?;
+    if input.new_owner_subject == subject {
+        return Err(ApiError::Conflict);
+    }
+    let mut transaction = state.pool.begin().await?;
+    let target_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM server_members WHERE server_id = $1 AND oidc_subject = $2 FOR UPDATE",
+    )
+    .bind(&server_id)
+    .bind(&input.new_owner_subject)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    sqlx::query("DELETE FROM server_members WHERE server_id = $1 AND oidc_subject = $2")
+        .bind(&server_id)
+        .bind(&input.new_owner_subject)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("UPDATE servers SET owner_subject = $2 WHERE id = $1 AND owner_subject = $3")
+        .bind(&server_id)
+        .bind(&input.new_owner_subject)
+        .bind(&subject)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "INSERT INTO server_members (server_id, oidc_subject, role) VALUES ($1, $2, 'admin')",
+    )
+    .bind(&server_id)
+    .bind(&subject)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO server_audit_log \
+         (server_id, actor_subject, action, target_subject, detail) \
+         VALUES ($1, $2, 'ownership.transferred', $3, \
+         jsonb_build_object('previousRole', $4::TEXT))",
+    )
+    .bind(&server_id)
+    .bind(&subject)
+    .bind(&input.new_owner_subject)
+    .bind(target_role)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    let _ = state
+        .changes
+        .send(ServerEvent::MembershipChanged { server_id });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_server(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_owner(&state.pool, &subject, &server_id).await?;
+    sqlx::query("DELETE FROM servers WHERE id = $1 AND owner_subject = $2")
+        .bind(&server_id)
+        .bind(subject)
+        .execute(&state.pool)
+        .await?;
+    let _ = state.changes.send(ServerEvent::ServerDeleted { server_id });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_audit(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AuditEntry>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let entries = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            Option<String>,
+            serde_json::Value,
+            String,
+        ),
+    >(
+        "SELECT id, actor_subject, action, target_subject, detail, \
+         TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+         FROM server_audit_log WHERE server_id = $1 \
+         ORDER BY created_at DESC, id DESC LIMIT 100",
+    )
+    .bind(server_id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(
+        |(id, actor_subject, action, target_subject, detail, created_at)| AuditEntry {
+            id,
+            actor_subject,
+            action,
+            target_subject,
+            detail,
+            created_at,
+        },
+    )
+    .collect();
+    Ok(Json(entries))
 }
 
 async fn create_server(
@@ -540,13 +984,21 @@ async fn create_server(
     sqlx::query("INSERT INTO servers (id, name, owner_subject) VALUES ($1, $2, $3)")
         .bind(&id)
         .bind(name)
-        .bind(subject)
+        .bind(&subject)
         .execute(&mut *transaction)
         .await?;
     sqlx::query("INSERT INTO server_state (server_id) VALUES ($1)")
         .bind(&id)
         .execute(&mut *transaction)
         .await?;
+    sqlx::query(
+        "INSERT INTO server_audit_log (server_id, actor_subject, action, target_subject) \
+         VALUES ($1, $2, 'server.created', $2)",
+    )
+    .bind(&id)
+    .bind(&subject)
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await?;
     Ok((
         StatusCode::CREATED,
@@ -559,16 +1011,7 @@ async fn create_server(
 }
 
 async fn require_member(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
-    let allowed = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM servers LEFT JOIN server_members \
-         ON server_members.server_id = servers.id AND server_members.oidc_subject = $1 \
-         WHERE servers.id = $2 AND (servers.owner_subject = $1 OR server_members.oidc_subject = $1))",
-    )
-    .bind(subject)
-    .bind(server_id)
-    .fetch_one(pool)
-    .await?;
-    if !allowed {
+    if server_role(pool, subject, server_id).await?.is_none() {
         return Err(ApiError::Unauthorized);
     }
     Ok(())
@@ -626,14 +1069,22 @@ async fn events(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
+    let mut changes = state.changes.subscribe();
     Ok(websocket.on_upgrade(move |socket| async move {
         let (mut sender, _) = socket.split();
-        let mut changes = state.changes.subscribe();
         loop {
             match changes.recv().await {
                 Ok(event) => {
                     if event.server_id() != server_id {
                         continue;
+                    }
+                    match server_role(&state.pool, &subject, &server_id).await {
+                        Ok(Some(_)) => {}
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(?error, "failed to reauthorize websocket event");
+                            break;
+                        }
                     }
                     let Ok(payload) = serde_json::to_string(&event) else {
                         tracing::error!("failed to serialize server event");
@@ -680,5 +1131,14 @@ mod tests {
                 "state": { "value": "saved" }
             })
         );
+    }
+
+    #[test]
+    fn membership_event_uses_the_public_json_contract() {
+        let event = ServerEvent::MembershipChanged {
+            server_id: "server-1".to_owned(),
+        };
+        let json = serde_json::to_value(event).unwrap_or_default();
+        assert_eq!(json, serde_json::json!({ "type": "membershipChanged" }));
     }
 }

@@ -78,7 +78,8 @@ dd {
   margin-top: 0.5rem;
 }
 
-input {
+input,
+select {
   flex: 1;
   min-width: 0;
   padding: 0.8rem 1rem;
@@ -86,6 +87,37 @@ input {
   border: 1px solid #3e587e;
   border-radius: 0.6rem;
   background: #0b1426;
+}
+
+output {
+  display: block;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+  border-radius: 0.6rem;
+  background: #111d33;
+}
+
+.member-list {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.member-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.75rem;
+  border-radius: 0.6rem;
+  background: #111d33;
+}
+
+.danger {
+  color: #fff;
+  background: #a42f3b;
 }
 
 button {

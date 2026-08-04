@@ -2,10 +2,13 @@ export type DurableState = Readonly<{
   value: string;
 }>;
 
-export type ServerEvent = Readonly<{
-  type: "durableStateChanged";
-  state: DurableState;
-}>;
+export type ServerEvent =
+  | Readonly<{
+      type: "durableStateChanged";
+      state: DurableState;
+    }>
+  | Readonly<{ type: "membershipChanged" }>
+  | Readonly<{ type: "serverDeleted" }>;
 
 export type AuthSession =
   | Readonly<{ authenticated: false }>
@@ -18,6 +21,27 @@ export type Server = Readonly<{
   id: string;
   name: string;
   role: "owner" | "admin" | "member";
+}>;
+
+export type ServerMember = Readonly<{
+  subject: string;
+  email: string;
+  displayName: string;
+  role: Server["role"];
+}>;
+
+export type ServerInvitation = Readonly<{
+  token: string;
+  email: string;
+}>;
+
+export type AuditEntry = Readonly<{
+  id: number;
+  actorSubject: string;
+  action: string;
+  targetSubject?: string;
+  detail: Readonly<Record<string, unknown>>;
+  createdAt: string;
 }>;
 
 const e2eApiOrigin =
@@ -43,6 +67,12 @@ function parseDurableState(value: unknown): DurableState {
 
 function parseServerEvent(value: unknown): ServerEvent {
   if (
+    isRecord(value) &&
+    (value.type === "membershipChanged" || value.type === "serverDeleted")
+  ) {
+    return { type: value.type };
+  }
+  if (
     !isRecord(value) ||
     value.type !== "durableStateChanged" ||
     !isRecord(value.state)
@@ -50,6 +80,61 @@ function parseServerEvent(value: unknown): ServerEvent {
     throw new Error("Buzzcode API returned an invalid server event");
   }
   return { type: value.type, state: parseDurableState(value.state) };
+}
+
+function parseMember(value: unknown): ServerMember {
+  if (
+    !isRecord(value) ||
+    typeof value.subject !== "string" ||
+    typeof value.email !== "string" ||
+    typeof value.displayName !== "string" ||
+    !["owner", "admin", "member"].includes(String(value.role))
+  ) {
+    throw new Error("Buzzcode API returned an invalid Server member");
+  }
+  return {
+    subject: value.subject,
+    email: value.email,
+    displayName: value.displayName,
+    role: value.role as ServerMember["role"],
+  };
+}
+
+function parseInvitation(value: unknown): ServerInvitation {
+  if (
+    !isRecord(value) ||
+    typeof value.token !== "string" ||
+    typeof value.email !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid invitation");
+  }
+  return { token: value.token, email: value.email };
+}
+
+function parseAuditEntry(value: unknown): AuditEntry {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "number" ||
+    typeof value.actorSubject !== "string" ||
+    typeof value.action !== "string" ||
+    (value.targetSubject !== undefined &&
+      value.targetSubject !== null &&
+      typeof value.targetSubject !== "string") ||
+    !isRecord(value.detail) ||
+    typeof value.createdAt !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid audit entry");
+  }
+  return {
+    id: value.id,
+    actorSubject: value.actorSubject,
+    action: value.action,
+    ...(typeof value.targetSubject === "string"
+      ? { targetSubject: value.targetSubject }
+      : {}),
+    detail: value.detail,
+    createdAt: value.createdAt,
+  };
 }
 
 async function parseResponse<T>(
@@ -113,6 +198,107 @@ export async function createServer(name: string): Promise<Server> {
     }),
     parseServer,
   );
+}
+
+export async function createInvitation(
+  serverId: string,
+  email: string,
+): Promise<ServerInvitation> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/invitations`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email }),
+      },
+    ),
+    parseInvitation,
+  );
+}
+
+export async function acceptInvitation(token: string): Promise<Server> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/invitations/accept`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    }),
+    parseServer,
+  );
+}
+
+export async function listMembers(
+  serverId: string,
+): Promise<readonly ServerMember[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/members`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value))
+    throw new Error("Buzzcode API returned an invalid member list");
+  return value.map(parseMember);
+}
+
+export async function updateMemberRole(
+  serverId: string,
+  subject: string,
+  role: "admin" | "member",
+): Promise<ServerMember> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/members/${encodeURIComponent(subject)}`,
+      {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role }),
+      },
+    ),
+    parseMember,
+  );
+}
+
+export async function transferOwnership(
+  serverId: string,
+  newOwnerSubject: string,
+): Promise<void> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/owner`,
+    {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ newOwnerSubject }),
+    },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+}
+
+export async function deleteServer(serverId: string): Promise<void> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+}
+
+export async function listAudit(
+  serverId: string,
+): Promise<readonly AuditEntry[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/audit`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value))
+    throw new Error("Buzzcode API returned an invalid audit log");
+  return value.map(parseAuditEntry);
 }
 
 export function loginUrl(): string {
