@@ -1,0 +1,3 @@
+# Use unified outbound host connections
+
+Local and remote agent execution will use the same Agent Host protocol. The desktop app runs the host locally for direct messages and personal projects, while each server project's VPS runs it as a service for the shared remote environment. Every host establishes an authenticated outbound connection and executes authorized agent and file operations locally; the central service does not initiate SSH sessions or retain host SSH private keys. This avoids two integration stacks and supports hosts behind NAT, at the cost of operating a host process everywhere agents run.

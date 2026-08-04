@@ -1,0 +1,31 @@
+{
+  "name": "buzzcode-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "build:e2e": "tsc -b && vite build --mode e2e",
+    "check": "biome check .",
+    "dev": "vite",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.8",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.1",
+    "typescript": "5.9.3",
+    "vite": "8.0.0"
+  }
+}

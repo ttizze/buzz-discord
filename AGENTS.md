@@ -592,3 +592,17 @@ usage.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — system design and component relationships
 - [RELEASING.md](RELEASING.md) — release process: `release-desktop`, `release-relay`, `scripts/mobile-release.sh`, candidate tags, internal builds
 - [README.md](README.md) — project overview and quick start
+
+## Agent skills
+
+### Issue tracker
+
+Buzzcode issues and PRDs are tracked in `ttizze/buzz-discord` GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Engineering skills use the standard five-label triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a multi-context layout with Buzzcode's glossary and ADRs under `buzzcode/`. See `docs/agents/domain.md`.

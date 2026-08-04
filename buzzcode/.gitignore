@@ -1,0 +1,11 @@
+/.data/
+/node_modules/
+/target/
+/test-results/
+/playwright-report/
+/desktop/dist/
+/desktop/node_modules/
+/desktop/src-tauri/gen/schemas/
+/desktop/*.tsbuildinfo
+/desktop/vite.config.d.ts
+/desktop/vite.config.js

@@ -1,0 +1,45 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+setup:
+    pnpm install --frozen-lockfile
+
+db-start:
+    data_dir="${BUZZCODE_PGDATA:-$PWD/.data/postgres}"; mkdir -p "$data_dir"; if [ ! -f "$data_dir/PG_VERSION" ]; then initdb -A trust --no-locale -E UTF8 -D "$data_dir"; fi; if ! pg_ctl -D "$data_dir" status >/dev/null 2>&1; then pg_ctl -D "$data_dir" -l "$data_dir/postgres.log" -o "-F -p 5433 -k /tmp" -w start; fi; psql -h 127.0.0.1 -p 5433 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'buzzcode'" | grep -q 1 || createdb -h 127.0.0.1 -p 5433 buzzcode
+
+db-stop:
+    data_dir="${BUZZCODE_PGDATA:-$PWD/.data/postgres}"; if [ -f "$data_dir/PG_VERSION" ] && pg_ctl -D "$data_dir" status >/dev/null 2>&1; then pg_ctl -D "$data_dir" -m fast -w stop; fi
+
+server: db-start
+    DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server
+
+desktop:
+    pnpm --dir desktop tauri dev
+
+dev: db-start
+    DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server & server_pid=$!; trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM; pnpm --dir desktop tauri dev
+
+format:
+    cargo fmt --all
+    pnpm format
+
+format-check:
+    cargo fmt --all -- --check
+    pnpm check
+
+lint:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    pnpm lint
+
+typecheck:
+    cargo check --workspace --all-targets
+    pnpm typecheck
+
+test-focused:
+    cargo test --workspace
+
+test-e2e:
+    cargo build -p buzzcode-server
+    pnpm --dir desktop build:e2e
+    pnpm test:e2e
+
+test: format-check lint typecheck test-focused test-e2e

@@ -1,0 +1,3 @@
+# Use Rauthy with production guards
+
+Buzzcode will use the Rust-based Rauthy identity provider through OIDC rather than implement public-SaaS authentication inside Axum. Version 1 authentication will offer email Magic Link delivered through Resend only; passwords, social login, and Passkeys are deferred. Deployment will pin version `v0.36.1` or newer, leave unneeded dynamic and ephemeral clients and refresh-token flows disabled, monitor security releases, back up the authentication database, and define an urgent patch procedure. Rauthy's independent audit and active maintenance make it acceptable for public beta, but its pre-1.0 maturity and maintainer concentration require an additional authentication security review before general availability.

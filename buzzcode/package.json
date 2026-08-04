@@ -1,0 +1,21 @@
+{
+  "name": "buzzcode",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "build": "pnpm --dir desktop build",
+    "check": "biome check .",
+    "dev": "pnpm --dir desktop dev",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit -p tsconfig.json --pretty false && pnpm --dir desktop typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.8",
+    "@playwright/test": "1.61.1",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

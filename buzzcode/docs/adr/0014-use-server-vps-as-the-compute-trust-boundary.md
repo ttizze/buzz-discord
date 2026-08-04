@@ -1,0 +1,3 @@
+# Use the server VPS as the compute trust boundary
+
+Each Agent Host and VPS belongs to exactly one server, and its remote agents run normally with the VPS's shell, filesystem, and browser capabilities. Open and private projects organize channels, searchable conversation history, and starting folders, but do not sandbox files or agents from other projects on that VPS. Private-project agents remain usable and their conversation history stays project-scoped; stronger compute isolation requires a separate server and VPS. This favors an understandable Codex-like remote environment over multi-tenant sandbox orchestration.
