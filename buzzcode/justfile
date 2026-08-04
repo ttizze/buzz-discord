@@ -10,13 +10,16 @@ db-stop:
     data_dir="${BUZZCODE_PGDATA:-$PWD/.data/postgres}"; if [ -f "$data_dir/PG_VERSION" ] && pg_ctl -D "$data_dir" status >/dev/null 2>&1; then pg_ctl -D "$data_dir" -m fast -w stop; fi
 
 server: db-start
-    DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server
+    set -a; [ ! -f .env ] || . ./.env; set +a; DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server
 
 desktop:
-    pnpm --dir desktop tauri dev
+    set -a; [ ! -f .env ] || . ./.env; set +a; pnpm --dir desktop tauri dev
 
 dev: db-start
-    DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server & server_pid=$!; trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM; pnpm --dir desktop tauri dev
+    set -a; [ ! -f .env ] || . ./.env; set +a; DATABASE_URL="${DATABASE_URL:-postgresql://localhost:5433/buzzcode}" cargo run -p buzzcode-server & server_pid=$!; trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM; pnpm --dir desktop tauri dev
+
+auth-smoke:
+    set -a; [ ! -f .env ] || . ./.env; set +a; BUZZCODE_API_ORIGIN="${VITE_BUZZCODE_API_ORIGIN:?VITE_BUZZCODE_API_ORIGIN is required}" ./scripts/smoke-rauthy.sh
 
 format:
     cargo fmt --all
@@ -36,6 +39,7 @@ typecheck:
 
 test-focused:
     cargo test --workspace
+    node --test tests/config/*.test.mjs
 
 test-e2e:
     cargo build -p buzzcode-server

@@ -56,22 +56,36 @@ async function run(command: string, args: string[], environment = process.env) {
 export class E2eHarness {
   private server: ChildProcess | undefined;
   private preview: ChildProcess | undefined;
+  private identityProvider: ChildProcess | undefined;
   private directory: string | undefined;
   private databaseStarted = false;
   private databasePort = 0;
   private serverPort = 0;
   private previewPort = 0;
+  private identityProviderPort = 0;
 
   get applicationUrl(): string {
-    const apiOrigin = `http://127.0.0.1:${this.serverPort}`;
-    return `http://127.0.0.1:${this.previewPort}/?apiOrigin=${encodeURIComponent(apiOrigin)}`;
+    return `http://127.0.0.1:${this.previewPort}/?apiOrigin=${encodeURIComponent(this.apiOrigin)}`;
+  }
+
+  get apiOrigin(): string {
+    return `http://127.0.0.1:${this.serverPort}`;
+  }
+
+  get identityProviderOrigin(): string {
+    return `http://127.0.0.1:${this.identityProviderPort}`;
   }
 
   async start(): Promise<void> {
     this.directory = await mkdtemp(join(tmpdir(), "buzzcode-e2e-"));
     const ports = new Set<number>();
-    while (ports.size < 3) ports.add(await availablePort());
-    [this.databasePort, this.serverPort, this.previewPort] = ports;
+    while (ports.size < 4) ports.add(await availablePort());
+    [
+      this.databasePort,
+      this.serverPort,
+      this.previewPort,
+      this.identityProviderPort,
+    ] = ports;
     const dataDirectory = join(this.directory, "postgres");
     await run("initdb", [
       "-A",
@@ -100,8 +114,9 @@ export class E2eHarness {
       String(this.databasePort),
       "buzzcode",
     ]);
-    await this.startServer();
     await this.startPreview();
+    await this.startIdentityProvider();
+    await this.startServer();
   }
 
   async restartServer(): Promise<void> {
@@ -112,6 +127,7 @@ export class E2eHarness {
   async stop(): Promise<void> {
     await this.stopChild("preview");
     await this.stopServer();
+    await this.stopChild("identityProvider");
     if (this.directory !== undefined) {
       const dataDirectory = join(this.directory, "postgres");
       if (this.databaseStarted) {
@@ -124,17 +140,44 @@ export class E2eHarness {
 
   private async startServer(): Promise<void> {
     const databaseUrl = `postgresql://localhost:${this.databasePort}/buzzcode`;
+    const apiOrigin = `http://127.0.0.1:${this.serverPort}`;
     this.server = spawn(resolve(root, "target/debug/buzzcode-server"), [], {
       cwd: root,
       env: {
         ...process.env,
         BUZZCODE_BIND: `127.0.0.1:${this.serverPort}`,
         DATABASE_URL: databaseUrl,
+        BUZZCODE_APP_URL: this.applicationUrl,
+        BUZZCODE_APP_ORIGIN: `http://127.0.0.1:${this.previewPort}`,
+        BUZZCODE_OIDC_CLIENT_ID: "buzzcode-desktop",
+        BUZZCODE_OIDC_CLIENT_SECRET: "e2e-client-secret",
+        BUZZCODE_OIDC_ISSUER: `http://127.0.0.1:${this.identityProviderPort}`,
+        BUZZCODE_OIDC_REDIRECT_URI: `${apiOrigin}/api/auth/callback`,
+        BUZZCODE_SESSION_COOKIE_SECURE: "false",
         RUST_LOG: "buzzcode_server=info",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
     await waitFor(`http://127.0.0.1:${this.serverPort}/health/ready`);
+  }
+
+  private async startIdentityProvider(): Promise<void> {
+    this.identityProvider = spawn(
+      "node",
+      [resolve(root, "tests/e2e/fake-oidc-provider.mjs")],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          FAKE_OIDC_CLIENT_ID: "buzzcode-desktop",
+          FAKE_OIDC_PORT: String(this.identityProviderPort),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    await waitFor(
+      `http://127.0.0.1:${this.identityProviderPort}/.well-known/openid-configuration`,
+    );
   }
 
   private async stopServer(): Promise<void> {
@@ -158,7 +201,9 @@ export class E2eHarness {
     await waitFor(`http://127.0.0.1:${this.previewPort}`);
   }
 
-  private async stopChild(field: "preview" | "server"): Promise<void> {
+  private async stopChild(
+    field: "identityProvider" | "preview" | "server",
+  ): Promise<void> {
     const child = this[field];
     this[field] = undefined;
     if (child === undefined || child.exitCode !== null) return;

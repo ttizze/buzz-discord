@@ -1,0 +1,19 @@
+[
+  {
+    "id": "buzzcode-desktop",
+    "name": "Buzzcode Desktop",
+    "secret": "generate",
+    "redirect_uris": ["https://api.example.com/api/auth/callback"],
+    "enabled": true,
+    "flows_enabled": ["authorization_code"],
+    "access_token_alg": "EdDSA",
+    "id_token_alg": "EdDSA",
+    "auth_code_lifetime": 60,
+    "access_token_lifetime": 900,
+    "scopes": ["openid", "profile", "email"],
+    "default_scopes": ["openid", "profile", "email"],
+    "challenges": ["S256"],
+    "force_mfa": true,
+    "client_uri": "https://buzzcode.example.com"
+  }
+]

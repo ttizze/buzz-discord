@@ -1,7 +1,10 @@
 # Buzzcode
 
 Buzzcode is an independent Rust, PostgreSQL, Tauri, and React application. It
-does not depend on Buzz crates or Nostr protocols.
+does not depend on Buzz crates or Nostr protocols. Authentication uses a pinned
+Rauthy deployment through Authorization Code OIDC with S256 PKCE. Accounts are
+created by an administrator, activated by email, and use Passkeys without a
+password.
 
 ## Development environment
 
@@ -11,6 +14,7 @@ All supported development commands run inside the pinned Nix flake:
 cd buzzcode
 nix develop
 just setup
+cp .env.example .env
 ```
 
 The flake provides Rust, Node.js, pnpm, PostgreSQL, Tauri system dependencies,
@@ -22,6 +26,10 @@ Playwright browsers, and the quality-gate tools on Apple Silicon macOS and
 ```bash
 just dev
 ```
+
+Configure and start Rauthy before `just dev`; see
+`deploy/rauthy/README.md`. `just auth-smoke` checks live discovery, S256
+support, and the Buzzcode-to-Rauthy redirect without completing a user login.
 
 This starts the local PostgreSQL database, the Axum server on
 `http://127.0.0.1:3100`, and the Tauri desktop. The database remains running so

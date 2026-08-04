@@ -1,0 +1,15 @@
+services:
+  rauthy:
+    image: ghcr.io/sebadob/rauthy:0.36.1
+    command: ["serve", "-c", "/app/config.toml"]
+    restart: unless-stopped
+    environment:
+      ENABLE_DYN_CLIENT_REG: "false"
+      ENABLE_EPHEMERAL_CLIENTS: "false"
+      OPEN_USER_REG: "false"
+    volumes:
+      - ${RAUTHY_CONFIG_PATH:?set RAUTHY_CONFIG_PATH}:/app/config.toml:ro
+      - ${RAUTHY_DATA_PATH:?set RAUTHY_DATA_PATH}:/app/data
+      - ./bootstrap:/app/bootstrap:ro
+    expose:
+      - "8080"

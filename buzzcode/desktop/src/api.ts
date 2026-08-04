@@ -7,6 +7,13 @@ export type ServerEvent = Readonly<{
   state: DurableState;
 }>;
 
+export type AuthSession =
+  | Readonly<{ authenticated: false }>
+  | Readonly<{
+      authenticated: true;
+      user: Readonly<{ email: string; displayName: string }>;
+    }>;
+
 const e2eApiOrigin =
   import.meta.env.MODE === "e2e"
     ? new URLSearchParams(window.location.search).get("apiOrigin")
@@ -49,9 +56,46 @@ async function parseResponse<T>(
   return parse(await response.json());
 }
 
+function parseAuthSession(value: unknown): AuthSession {
+  if (!isRecord(value) || typeof value.authenticated !== "boolean") {
+    throw new Error("Buzzcode API returned an invalid authentication session");
+  }
+  if (!value.authenticated) return { authenticated: false };
+  if (
+    !isRecord(value.user) ||
+    typeof value.user.email !== "string" ||
+    typeof value.user.displayName !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid authenticated user");
+  }
+  return {
+    authenticated: true,
+    user: { email: value.user.email, displayName: value.user.displayName },
+  };
+}
+
+export function loginUrl(): string {
+  return `${apiOrigin}/api/auth/login`;
+}
+
+export async function readAuthSession(): Promise<AuthSession> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/auth/session`, { credentials: "include" }),
+    parseAuthSession,
+  );
+}
+
+export async function logout(): Promise<void> {
+  const response = await fetch(`${apiOrigin}/api/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+}
+
 export async function readDurableState(): Promise<DurableState> {
   return parseResponse(
-    await fetch(`${apiOrigin}/api/bootstrap`),
+    await fetch(`${apiOrigin}/api/bootstrap`, { credentials: "include" }),
     parseDurableState,
   );
 }
@@ -60,6 +104,7 @@ export async function writeDurableState(value: string): Promise<DurableState> {
   return parseResponse(
     await fetch(`${apiOrigin}/api/bootstrap`, {
       method: "PUT",
+      credentials: "include",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ value }),
     }),

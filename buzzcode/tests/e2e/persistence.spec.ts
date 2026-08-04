@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
 
 const harness = new E2eHarness();
@@ -11,13 +11,23 @@ test.afterAll(async () => {
   await harness.stop();
 });
 
+async function signIn(page: Page): Promise<void> {
+  await page.goto(harness.applicationUrl);
+  await page.getByRole("button", { name: "Sign in with a passkey" }).click();
+  await page.getByRole("button", { name: "Continue with passkey" }).click();
+  await expect(page.getByTestId("signed-in-user")).toHaveText(
+    "owner@example.com",
+  );
+}
+
 test("persists a value, broadcasts it, and reads it after restart", async ({
   browser,
 }) => {
-  const observer = await browser.newPage();
-  const writer = await browser.newPage();
+  const context = await browser.newContext();
+  const observer = await context.newPage();
+  const writer = await context.newPage();
 
-  await observer.goto(harness.applicationUrl);
+  await signIn(observer);
   await writer.goto(harness.applicationUrl);
   await expect(observer.getByTestId("realtime-status")).toHaveText("Connected");
   await expect(writer.getByTestId("realtime-status")).toHaveText("Connected");
