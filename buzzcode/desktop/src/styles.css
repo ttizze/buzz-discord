@@ -1016,6 +1016,41 @@ button:disabled {
   gap: 0.4rem;
 }
 
+.remote-environment-list {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0;
+  list-style: none;
+}
+
+.remote-environment-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.35rem;
+  background: #1e1f22;
+}
+
+.host-status {
+  color: #b5bac1;
+  font-size: 0.75rem;
+}
+
+.host-status.online {
+  color: #23a559;
+}
+
+.host-status.reconnecting {
+  color: #f0b232;
+}
+
+.host-status.revoked {
+  color: #f23f42;
+}
+
 .direct-messages {
   display: block;
   height: 100dvh;

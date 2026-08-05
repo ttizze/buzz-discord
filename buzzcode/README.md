@@ -42,6 +42,29 @@ are placed in the browser URL.
 
 For split terminals, run `just server` and `just desktop` after `just db-start`.
 
+## Pair a Remote Environment
+
+Each VPS runs one outbound-only `buzzcode-host`. An Owner or Admin creates a
+10-minute, one-time pairing code from **Server Settings → Remote Environments**.
+On that VPS, build or install the Host and pair it once:
+
+```bash
+cargo build --release -p buzzcode-host
+./target/release/buzzcode-host pair \
+  --api-origin https://buzzcode.example.com \
+  --pairing-code '<code from Server Settings>' \
+  --name 'Production VPS 1' \
+  --state /var/lib/buzzcode-host/state.json
+./target/release/buzzcode-host run \
+  --state /var/lib/buzzcode-host/state.json
+```
+
+Run the second command under the VPS service manager with automatic restart.
+The state file is created with owner-only permissions and binds that Host
+installation to exactly one Server. A Server may have multiple Hosts. The Host
+opens an authenticated outbound WebSocket; Buzzcode does not need the VPS SSH
+private key or an inbound Host port.
+
 ## Quality gates
 
 ```bash

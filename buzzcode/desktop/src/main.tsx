@@ -9,6 +9,7 @@ import {
   completeDesktopLogin,
   createChannel,
   createChannelMessage,
+  createHostPairingCode,
   createInvitation,
   createServer,
   deleteChannelMessage,
@@ -19,12 +20,15 @@ import {
   listChannelMessages,
   listChannels,
   listMembers,
+  listRemoteEnvironments,
   listServers,
   loginUrl,
   logout,
   type MentionInput,
+  type RemoteEnvironment,
   readAuthSession,
   readDurableState,
+  revokeRemoteEnvironment,
   type Server,
   type ServerMember,
   searchMentionCandidates,
@@ -198,10 +202,15 @@ function AuthenticatedApp({
   const [connected, setConnected] = useState(false);
   const [members, setMembers] = useState<readonly ServerMember[]>([]);
   const [audit, setAudit] = useState<readonly AuditEntry[]>([]);
+  const [remoteEnvironments, setRemoteEnvironments] = useState<
+    readonly RemoteEnvironment[]
+  >([]);
+  const [hostPairingCode, setHostPairingCode] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [createdInvite, setCreatedInvite] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
+  const environmentRequestVersion = useRef(0);
   const messageChannelId = useRef<string | null>(null);
   const navigationToggle = useRef<HTMLButtonElement | null>(null);
   const navigationDrawer = useRef<HTMLElement | null>(null);
@@ -310,6 +319,14 @@ function AuthenticatedApp({
     setAudit(loadedAudit);
   }, []);
 
+  const reloadRemoteEnvironments = useCallback(async (serverId: string) => {
+    const requestVersion = ++environmentRequestVersion.current;
+    const loaded = await listRemoteEnvironments(serverId);
+    if (requestVersion === environmentRequestVersion.current) {
+      setRemoteEnvironments(loaded);
+    }
+  }, []);
+
   const reloadChannels = useCallback(async (serverId: string) => {
     const loaded = await listChannels(serverId);
     setChannels(loaded);
@@ -411,6 +428,7 @@ function AuthenticatedApp({
     setEditingMessageId(null);
     setEditMentions([]);
     void reloadManagement(activeServer.id);
+    void reloadRemoteEnvironments(activeServer.id);
     void reloadChannels(activeServer.id);
     void readDurableState(activeServer.id).then((state) => {
       if (!current) return;
@@ -433,6 +451,8 @@ function AuthenticatedApp({
         } else if (event.type === "channelAccessChanged") {
           void reloadChannels(activeServer.id);
           void reloadManagement(activeServer.id);
+        } else if (event.type === "remoteEnvironmentsChanged") {
+          void reloadRemoteEnvironments(activeServer.id);
         } else if (event.type === "channelCreated") {
           setChannels((existing) => {
             if (existing?.some((channel) => channel.id === event.channel.id)) {
@@ -480,6 +500,7 @@ function AuthenticatedApp({
     reloadChannels,
     reloadManagement,
     reloadMessages,
+    reloadRemoteEnvironments,
     reloadServers,
     refreshMessage,
   ]);
@@ -546,6 +567,7 @@ function AuthenticatedApp({
   function selectServer(server: Server) {
     if (activeServer?.id !== server.id) {
       managementRequestVersion.current += 1;
+      environmentRequestVersion.current += 1;
       messageChannelId.current = null;
       setChannels(null);
       setActiveChannel(null);
@@ -553,6 +575,8 @@ function AuthenticatedApp({
       setNextBefore(undefined);
       setMembers([]);
       setAudit([]);
+      setRemoteEnvironments([]);
+      setHostPairingCode("");
       setDurableValue("Loading…");
       setDraft("");
       setMessageDraft("");
@@ -695,6 +719,18 @@ function AuthenticatedApp({
     setCreatedInvite(invitation.token);
     setInviteEmail("");
     await reloadManagement(activeServer.id);
+  }
+
+  async function createPairingCode() {
+    if (activeServer === null) return;
+    const pairing = await createHostPairingCode(activeServer.id);
+    setHostPairingCode(pairing.code);
+  }
+
+  async function revokeEnvironment(environment: RemoteEnvironment) {
+    if (activeServer === null) return;
+    await revokeRemoteEnvironment(activeServer.id, environment.id);
+    await reloadRemoteEnvironments(activeServer.id);
   }
 
   async function joinServer() {
@@ -1468,6 +1504,58 @@ function AuthenticatedApp({
                             )}
                           </>
                         )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section aria-labelledby="remote-environments-heading">
+                  <h3 id="remote-environments-heading">Remote Environments</h3>
+                  {(activeServer.role === "owner" ||
+                    activeServer.role === "admin") && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void createPairingCode()}
+                      >
+                        Create pairing code
+                      </button>
+                      {hostPairingCode !== "" && (
+                        <output data-testid="host-pairing-code">
+                          {hostPairingCode}
+                        </output>
+                      )}
+                    </>
+                  )}
+                  <ul
+                    className="remote-environment-list"
+                    data-testid="remote-environment-list"
+                  >
+                    {remoteEnvironments.map((environment) => (
+                      <li
+                        key={environment.id}
+                        data-testid={`remote-environment-${environment.id}`}
+                      >
+                        <span>{environment.name}</span>
+                        <strong className={`host-status ${environment.status}`}>
+                          {environment.status === "reconnecting"
+                            ? "Reconnecting"
+                            : environment.status[0].toUpperCase() +
+                              environment.status.slice(1)}
+                        </strong>
+                        {(activeServer.role === "owner" ||
+                          activeServer.role === "admin") &&
+                          environment.status !== "revoked" && (
+                            <button
+                              type="button"
+                              className="danger"
+                              aria-label={`Revoke ${environment.name}`}
+                              onClick={() =>
+                                void revokeEnvironment(environment)
+                              }
+                            >
+                              Revoke
+                            </button>
+                          )}
                       </li>
                     ))}
                   </ul>

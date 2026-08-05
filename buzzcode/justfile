@@ -42,7 +42,7 @@ test-focused:
     node --test tests/config/*.test.mjs
 
 test-e2e:
-    cargo build -p buzzcode-server
+    cargo build -p buzzcode-server -p buzzcode-host
     pnpm --dir desktop build:e2e
     pnpm test:e2e
 

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Executor, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use thiserror::Error;
-use tokio::{net::TcpListener, sync::broadcast};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, broadcast},
+};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, CorsLayer},
     trace::TraceLayer,
@@ -27,6 +30,7 @@ use tower_http::{
 use url::Url;
 
 mod direct_messages;
+mod hosts;
 mod people;
 
 const SESSION_COOKIE: &str = "buzzcode_session";
@@ -89,6 +93,9 @@ pub(crate) struct AppState {
     pub(crate) pool: PgPool,
     changes: broadcast::Sender<ServerEvent>,
     pub(crate) direct_message_changes: broadcast::Sender<direct_messages::DirectMessageEvent>,
+    host_presence: Arc<RwLock<HashMap<String, hosts::HostPresence>>>,
+    host_revocations: broadcast::Sender<String>,
+    host_reconnect_grace: Duration,
     oidc: CoreClient<
         EndpointSet,
         EndpointNotSet,
@@ -109,7 +116,7 @@ struct DurableState {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-enum ServerEvent {
+pub(crate) enum ServerEvent {
     DurableStateChanged {
         #[serde(skip)]
         server_id: String,
@@ -145,6 +152,10 @@ enum ServerEvent {
         #[serde(rename = "messageId")]
         message_id: String,
     },
+    RemoteEnvironmentsChanged {
+        #[serde(skip)]
+        server_id: String,
+    },
 }
 
 impl ServerEvent {
@@ -156,7 +167,8 @@ impl ServerEvent {
             | Self::ChannelCreated { server_id, .. }
             | Self::ChannelAccessChanged { server_id }
             | Self::MessageCreated { server_id, .. }
-            | Self::MessageChanged { server_id, .. } => server_id,
+            | Self::MessageChanged { server_id, .. }
+            | Self::RemoteEnvironmentsChanged { server_id } => server_id,
         }
     }
 
@@ -620,10 +632,18 @@ pub async fn serve(
         .map_err(|error| ServerError::Configuration(error.to_string()))?;
     let (changes, _) = broadcast::channel(64);
     let (direct_message_changes, _) = broadcast::channel(64);
+    let (host_revocations, _) = broadcast::channel(64);
+    let host_reconnect_grace = env::var("BUZZCODE_HOST_RECONNECT_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(Duration::from_secs(15), Duration::from_millis);
     let state = Arc::new(AppState {
         pool,
         changes,
         direct_message_changes,
+        host_presence: Arc::new(RwLock::new(HashMap::new())),
+        host_revocations,
+        host_reconnect_grace,
         oidc,
         http,
         auth,
@@ -687,6 +707,7 @@ pub async fn serve(
         )
         .route("/api/servers/{server_id}/events", get(events))
         .merge(direct_messages::routes())
+        .merge(hosts::routes())
         .merge(people::routes())
         .layer(
             CorsLayer::new()

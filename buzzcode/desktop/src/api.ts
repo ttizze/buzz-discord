@@ -11,6 +11,7 @@ export type ServerEvent =
   | Readonly<{ type: "serverDeleted" }>
   | Readonly<{ type: "channelCreated"; channel: Channel }>
   | Readonly<{ type: "channelAccessChanged" }>
+  | Readonly<{ type: "remoteEnvironmentsChanged" }>
   | Readonly<{ type: "messageCreated"; message: ChannelMessage }>
   | Readonly<{
       type: "messageChanged";
@@ -143,6 +144,20 @@ export type ServerInvitation = Readonly<{
   email: string;
 }>;
 
+export type HostPairingCode = Readonly<{
+  code: string;
+  expiresAt: string;
+}>;
+
+export type RemoteEnvironment = Readonly<{
+  id: string;
+  serverId: string;
+  name: string;
+  status: "online" | "offline" | "reconnecting" | "revoked";
+  createdAt: string;
+  lastSeenAt?: string;
+}>;
+
 export type AuditEntry = Readonly<{
   id: number;
   actorSubject: string;
@@ -204,7 +219,8 @@ function parseServerEvent(value: unknown): ServerEvent {
     isRecord(value) &&
     (value.type === "membershipChanged" ||
       value.type === "serverDeleted" ||
-      value.type === "channelAccessChanged")
+      value.type === "channelAccessChanged" ||
+      value.type === "remoteEnvironmentsChanged")
   ) {
     return { type: value.type };
   }
@@ -434,6 +450,45 @@ function parseInvitation(value: unknown): ServerInvitation {
     throw new Error("Buzzcode API returned an invalid invitation");
   }
   return { token: value.token, email: value.email };
+}
+
+function parseHostPairingCode(value: unknown): HostPairingCode {
+  if (
+    !isRecord(value) ||
+    typeof value.code !== "string" ||
+    typeof value.expiresAt !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Host pairing code");
+  }
+  return { code: value.code, expiresAt: value.expiresAt };
+}
+
+function parseRemoteEnvironment(value: unknown): RemoteEnvironment {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.serverId !== "string" ||
+    typeof value.name !== "string" ||
+    !["online", "offline", "reconnecting", "revoked"].includes(
+      String(value.status),
+    ) ||
+    typeof value.createdAt !== "string" ||
+    (value.lastSeenAt !== undefined &&
+      value.lastSeenAt !== null &&
+      typeof value.lastSeenAt !== "string")
+  ) {
+    throw new Error("Buzzcode API returned an invalid Remote Environment");
+  }
+  return {
+    id: value.id,
+    serverId: value.serverId,
+    name: value.name,
+    status: value.status as RemoteEnvironment["status"],
+    createdAt: value.createdAt,
+    ...(typeof value.lastSeenAt === "string"
+      ? { lastSeenAt: value.lastSeenAt }
+      : {}),
+  };
 }
 
 function parseAuditEntry(value: unknown): AuditEntry {
@@ -915,6 +970,44 @@ export async function createInvitation(
     ),
     parseInvitation,
   );
+}
+
+export async function createHostPairingCode(
+  serverId: string,
+): Promise<HostPairingCode> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/host-pairing-codes`,
+      { method: "POST", credentials: "include" },
+    ),
+    parseHostPairingCode,
+  );
+}
+
+export async function listRemoteEnvironments(
+  serverId: string,
+): Promise<readonly RemoteEnvironment[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid Remote Environment list");
+  }
+  return value.map(parseRemoteEnvironment);
+}
+
+export async function revokeRemoteEnvironment(
+  serverId: string,
+  environmentId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments/${encodeURIComponent(environmentId)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
 }
 
 export async function acceptInvitation(token: string): Promise<Server> {
