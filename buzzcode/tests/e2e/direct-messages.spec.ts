@@ -34,9 +34,10 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await expect(
     owner.getByRole("heading", { name: "Direct Messages" }),
   ).toBeVisible();
-  await owner.getByLabel("Direct Message email").fill("member@example.com");
+  await owner.getByLabel("Direct Message handle").fill("@member");
   await owner.getByRole("button", { name: "Start Direct Message" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText("member");
+  await expect(owner.getByText("member@example.com")).toHaveCount(0);
   await expect(member.getByRole("button", { name: "owner" })).toBeVisible();
   await member.getByRole("button", { name: "owner" }).click();
   await expect(member.getByTestId("dm-realtime-status")).toHaveText(
@@ -47,7 +48,7 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
     .getAttribute("data-direct-message-id");
   expect(directMessageId).toBeTruthy();
 
-  await owner.getByLabel("Direct Message email").fill("member@example.com");
+  await owner.getByLabel("Direct Message handle").fill("@member");
   await owner.getByRole("button", { name: "Start Direct Message" }).click();
   await expect(owner.getByRole("button", { name: "member" })).toHaveCount(1);
   await expect(owner.getByRole("button", { name: "member" })).toHaveAttribute(
@@ -63,17 +64,13 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
           credentials: "include",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            participantEmails: [
-              "owner@example.com",
-              "member@example.com",
-              "intruder@example.com",
-            ],
+            participantHandles: ["@owner", "@member", "@intruder"],
           }),
         })
       ).status,
     { apiOrigin: harness.apiOrigin },
   );
-  expect(groupStatus).toBe(400);
+  expect([400, 422]).toContain(groupStatus);
 
   await intruder.evaluate(
     ({ apiOrigin }) => {

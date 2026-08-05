@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlJson;
 
 use super::{
-    ApiError, AppState, EditMessage, ReactionInput, ReactionSummary, ReplyTarget, require_origin,
-    require_session,
+    ApiError, AppState, EditMessage, ReactionInput, ReactionSummary, ReplyTarget, normalize_handle,
+    require_origin, require_session,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,7 +54,7 @@ impl DirectMessageEvent {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct StartDirectMessage {
-    participant_emails: Vec<String>,
+    peer_handle: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,7 +62,7 @@ struct StartDirectMessage {
 struct DirectMessageSummary {
     id: String,
     peer_subject: String,
-    peer_email: String,
+    peer_handle: String,
     peer_display_name: String,
 }
 
@@ -261,7 +261,7 @@ async fn summary(
     direct_message_id: &str,
 ) -> Result<DirectMessageSummary, ApiError> {
     sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT direct_message.id, peer.oidc_subject, peer.email, peer.display_name \
+        "SELECT direct_message.id, peer.oidc_subject, peer.handle, peer.display_name \
          FROM direct_messages direct_message \
          JOIN users peer ON peer.oidc_subject = CASE \
              WHEN direct_message.participant_one_subject = $1 \
@@ -275,10 +275,10 @@ async fn summary(
     .fetch_optional(&state.pool)
     .await?
     .map(
-        |(id, peer_subject, peer_email, peer_display_name)| DirectMessageSummary {
+        |(id, peer_subject, peer_handle, peer_display_name)| DirectMessageSummary {
             id,
             peer_subject,
-            peer_email,
+            peer_handle,
             peer_display_name,
         },
     )
@@ -292,7 +292,7 @@ async fn list(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     let rows = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT direct_message.id, peer.oidc_subject, peer.email, peer.display_name \
+        "SELECT direct_message.id, peer.oidc_subject, peer.handle, peer.display_name \
          FROM direct_messages direct_message \
          JOIN users peer ON peer.oidc_subject = CASE \
              WHEN direct_message.participant_one_subject = $1 \
@@ -307,10 +307,10 @@ async fn list(
     Ok(Json(
         rows.into_iter()
             .map(
-                |(id, peer_subject, peer_email, peer_display_name)| DirectMessageSummary {
+                |(id, peer_subject, peer_handle, peer_display_name)| DirectMessageSummary {
                     id,
                     peer_subject,
-                    peer_email,
+                    peer_handle,
                     peer_display_name,
                 },
             )
@@ -325,30 +325,18 @@ async fn start(
 ) -> Result<Json<DirectMessageSummary>, ApiError> {
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
-    let mut emails: Vec<String> = input
-        .participant_emails
-        .into_iter()
-        .map(|email| email.trim().to_lowercase())
-        .collect();
-    emails.sort();
-    emails.dedup();
-    if emails.len() != 2 {
+    let peer_handle = normalize_handle(&input.peer_handle).ok_or(ApiError::InvalidRequest)?;
+    let peer_subject =
+        sqlx::query_scalar::<_, String>("SELECT oidc_subject FROM users WHERE handle = $1")
+            .bind(peer_handle)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+    if peer_subject == subject {
         return Err(ApiError::InvalidRequest);
     }
-    let mut participants = sqlx::query_as::<_, (String, String)>(
-        "SELECT oidc_subject, LOWER(email) FROM users WHERE LOWER(email) = ANY($1)",
-    )
-    .bind(&emails)
-    .fetch_all(&state.pool)
-    .await?;
-    if participants.len() != 2
-        || !participants
-            .iter()
-            .any(|participant| participant.0 == subject)
-    {
-        return Err(ApiError::InvalidRequest);
-    }
-    participants.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut participants = [subject.clone(), peer_subject];
+    participants.sort();
     let proposed_id = CsrfToken::new_random().secret().to_owned();
     let inserted = sqlx::query_scalar::<_, String>(
         "INSERT INTO direct_messages \
@@ -356,8 +344,8 @@ async fn start(
          VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id",
     )
     .bind(&proposed_id)
-    .bind(&participants[0].0)
-    .bind(&participants[1].0)
+    .bind(&participants[0])
+    .bind(&participants[1])
     .bind(&subject)
     .fetch_optional(&state.pool)
     .await?;
@@ -373,8 +361,8 @@ async fn start(
             "SELECT id FROM direct_messages \
              WHERE participant_one_subject = $1 AND participant_two_subject = $2",
         )
-        .bind(&participants[0].0)
-        .bind(&participants[1].0)
+        .bind(&participants[0])
+        .bind(&participants[1])
         .fetch_one(&state.pool)
         .await?
     };

@@ -22,7 +22,12 @@ export type AuthSession =
   | Readonly<{ authenticated: false }>
   | Readonly<{
       authenticated: true;
-      user: Readonly<{ subject: string; email: string; displayName: string }>;
+      user: Readonly<{
+        subject: string;
+        email: string;
+        handle: string;
+        displayName: string;
+      }>;
     }>;
 
 export type DesktopLogin = Readonly<{
@@ -74,7 +79,7 @@ export type MessagePage = Readonly<{
 export type DirectMessage = Readonly<{
   id: string;
   peerSubject: string;
-  peerEmail: string;
+  peerHandle: string;
   peerDisplayName: string;
 }>;
 
@@ -295,7 +300,7 @@ function parseDirectMessage(value: unknown): DirectMessage {
     !isRecord(value) ||
     typeof value.id !== "string" ||
     typeof value.peerSubject !== "string" ||
-    typeof value.peerEmail !== "string" ||
+    typeof value.peerHandle !== "string" ||
     typeof value.peerDisplayName !== "string"
   ) {
     throw new Error("Buzzcode API returned an invalid Direct Message");
@@ -303,7 +308,7 @@ function parseDirectMessage(value: unknown): DirectMessage {
   return {
     id: value.id,
     peerSubject: value.peerSubject,
-    peerEmail: value.peerEmail,
+    peerHandle: value.peerHandle,
     peerDisplayName: value.peerDisplayName,
   };
 }
@@ -424,6 +429,7 @@ function parseAuthSession(value: unknown): AuthSession {
     !isRecord(value.user) ||
     typeof value.user.subject !== "string" ||
     typeof value.user.email !== "string" ||
+    typeof value.user.handle !== "string" ||
     typeof value.user.displayName !== "string"
   ) {
     throw new Error("Buzzcode API returned an invalid authenticated user");
@@ -433,6 +439,7 @@ function parseAuthSession(value: unknown): AuthSession {
     user: {
       subject: value.user.subject,
       email: value.user.email,
+      handle: value.user.handle,
       displayName: value.user.displayName,
     },
   };
@@ -674,15 +681,14 @@ export async function listDirectMessages(): Promise<readonly DirectMessage[]> {
 }
 
 export async function startDirectMessage(
-  currentEmail: string,
-  peerEmail: string,
+  peerHandle: string,
 ): Promise<DirectMessage> {
   return parseResponse(
     await fetch(`${apiOrigin}/api/direct-messages`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ participantEmails: [currentEmail, peerEmail] }),
+      body: JSON.stringify({ peerHandle }),
     }),
     parseDirectMessage,
   );

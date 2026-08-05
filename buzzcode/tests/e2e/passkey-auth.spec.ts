@@ -14,9 +14,10 @@ test.afterAll(async () => {
 async function completeOidcFlow(
   request: APIRequestContext,
   tokenMode = "valid",
+  user = "owner",
 ) {
   await request.get(
-    `${harness.identityProviderOrigin}/test/next-token?mode=${tokenMode}`,
+    `${harness.identityProviderOrigin}/test/next-token?mode=${tokenMode}&user=${user}`,
   );
   const login = await request.get(`${harness.apiOrigin}/api/auth/login`, {
     maxRedirects: 0,
@@ -41,6 +42,45 @@ async function completeOidcFlow(
     response: await request.get(callbackUrl, { maxRedirects: 0 }),
   };
 }
+
+test("rejects a second account claiming an existing Handle", async ({
+  request,
+}) => {
+  expect((await completeOidcFlow(request)).response.status()).toBe(303);
+  const collision = await completeOidcFlow(
+    request,
+    "valid",
+    "owner-handle-copy",
+  );
+  expect(collision.response.status()).toBe(409);
+});
+
+test("keeps an existing Handle when the identity claim is omitted", async ({
+  request,
+}) => {
+  expect((await completeOidcFlow(request)).response.status()).toBe(303);
+  const repeat = await completeOidcFlow(request, "missing-username");
+  expect(repeat.response.status()).toBe(303);
+  const session = await request.get(`${harness.apiOrigin}/api/auth/session`);
+  expect(await session.json()).toMatchObject({
+    user: { handle: "owner", displayName: "owner" },
+  });
+});
+
+test("allows duplicate Display Names with distinct Handles", async ({
+  request,
+}) => {
+  expect((await completeOidcFlow(request)).response.status()).toBe(303);
+  const twin = await completeOidcFlow(request, "valid", "owner_display_twin");
+  expect(twin.response.status()).toBe(303);
+  const session = await request.get(`${harness.apiOrigin}/api/auth/session`);
+  expect(await session.json()).toMatchObject({
+    user: {
+      handle: "owner_display_twin",
+      displayName: "owner",
+    },
+  });
+});
 
 test("rejects unauthenticated access to protected application data", async ({
   request,

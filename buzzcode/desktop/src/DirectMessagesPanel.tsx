@@ -32,7 +32,7 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
     readonly DirectMessage[]
   >([]);
   const [active, setActive] = useState<DirectMessage | null>(null);
-  const [peerEmail, setPeerEmail] = useState("");
+  const [peerHandle, setPeerHandle] = useState("");
   const [messages, setMessages] = useState<readonly DirectMessageMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [replyingTo, setReplyingTo] = useState<DirectMessageMessage | null>(
@@ -123,8 +123,8 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
   }, [active, reloadMessages]);
 
   async function openDirectMessage() {
-    const created = await startDirectMessage(session.user.email, peerEmail);
-    setPeerEmail("");
+    const created = await startDirectMessage(peerHandle);
+    setPeerHandle("");
     await reloadDirectMessages(created.id);
     setActive(created);
   }
@@ -176,16 +176,18 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
         </span>
       </header>
       <div className="composer">
-        <label htmlFor="direct-message-email">Direct Message email</label>
+        <label htmlFor="direct-message-handle">Direct Message handle</label>
         <input
-          id="direct-message-email"
-          type="email"
-          value={peerEmail}
-          onChange={(event) => setPeerEmail(event.target.value)}
+          id="direct-message-handle"
+          value={peerHandle}
+          placeholder="@handle"
+          autoCapitalize="none"
+          spellCheck={false}
+          onChange={(event) => setPeerHandle(event.target.value)}
         />
         <button
           type="button"
-          disabled={peerEmail.trim() === ""}
+          disabled={peerHandle.trim() === ""}
           onClick={() => void openDirectMessage()}
         >
           Start Direct Message
@@ -201,7 +203,7 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
               aria-current={active?.id === directMessage.id}
               onClick={() => setActive(directMessage)}
             >
-              {directMessage.peerDisplayName}
+              {directMessage.peerDisplayName} @{directMessage.peerHandle}
             </button>
           ))}
         </nav>

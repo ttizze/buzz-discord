@@ -4,6 +4,10 @@ Buzzcode is a shared workspace where people and agents communicate and work toge
 
 ## Language
 
+**Handle**:
+A global, unique, lowercase username such as `@phibi` used to find and distinguish a user. A user's stable database identity remains its internal subject, so an existing Direct Message survives later Handle changes. Display names and Server nicknames are presentation and may overlap; email is reserved for authentication and invitations.
+_Avoid_: Email address, display name, internal subject
+
 **Server**:
 An isolated collaboration space containing its own channels, members, and projects. A user may belong to and switch between multiple servers, and a server remains usable for chat without a connected remote environment.
 _Avoid_: Workspace, community, tenant

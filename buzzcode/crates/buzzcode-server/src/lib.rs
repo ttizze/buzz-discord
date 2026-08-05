@@ -30,6 +30,16 @@ mod direct_messages;
 
 const SESSION_COOKIE: &str = "buzzcode_session";
 
+pub(crate) fn normalize_handle(value: &str) -> Option<String> {
+    let handle = value.trim().strip_prefix('@').unwrap_or(value.trim());
+    let handle = handle.to_ascii_lowercase();
+    let valid_length = (2..=32).contains(&handle.len());
+    let valid_characters = handle.bytes().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || b"._".contains(&character)
+    });
+    (valid_length && valid_characters && !handle.contains("..")).then_some(handle)
+}
+
 /// OIDC and browser settings required by the Buzzcode server.
 #[derive(Clone)]
 pub struct AuthConfig {
@@ -169,6 +179,7 @@ struct Health {
 struct SessionUser {
     subject: String,
     email: String,
+    handle: String,
     display_name: String,
 }
 
@@ -657,21 +668,70 @@ async fn auth_callback(
         .email()
         .map(|value| value.as_str().to_owned())
         .ok_or(ApiError::InvalidAuthentication)?;
-    let display_name = claims
-        .preferred_username()
-        .map(|value| value.as_str().to_owned())
-        .unwrap_or_else(|| email.clone());
+    let claimed_display_name = claims.name().and_then(|names| {
+        names
+            .get(None)
+            .or_else(|| names.iter().next().map(|(_, name)| name))
+            .map(|name| name.as_str().trim().to_owned())
+            .filter(|name| !name.is_empty())
+    });
     let subject = claims.subject().to_string();
-    sqlx::query(
-        "INSERT INTO users (oidc_subject, email, display_name) VALUES ($1, $2, $3) \
-         ON CONFLICT (oidc_subject) DO UPDATE SET email = EXCLUDED.email, \
-         display_name = EXCLUDED.display_name, updated_at = NOW()",
+    let mut transaction = state.pool.begin().await?;
+    let existing_user = sqlx::query_as::<_, (String, String)>(
+        "SELECT handle, display_name FROM users WHERE oidc_subject = $1 FOR UPDATE",
     )
     .bind(&subject)
-    .bind(&email)
-    .bind(&display_name)
-    .execute(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?;
+    if let Some((_, current_display_name)) = existing_user {
+        let display_name = claimed_display_name.unwrap_or(current_display_name);
+        sqlx::query(
+            "UPDATE users SET email = $2, display_name = $3, updated_at = NOW() \
+             WHERE oidc_subject = $1",
+        )
+        .bind(&subject)
+        .bind(&email)
+        .bind(&display_name)
+        .execute(&mut *transaction)
+        .await?;
+    } else {
+        let preferred_username = claims
+            .preferred_username()
+            .map(|value| value.as_str().to_owned())
+            .ok_or(ApiError::InvalidAuthentication)?;
+        let handle =
+            normalize_handle(&preferred_username).ok_or(ApiError::InvalidAuthentication)?;
+        let display_name = claimed_display_name.unwrap_or(preferred_username);
+        let claimed =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE handle = $1)")
+                .bind(&handle)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if claimed {
+            return Err(ApiError::Conflict);
+        }
+        sqlx::query(
+            "INSERT INTO users (oidc_subject, email, handle, display_name) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&subject)
+        .bind(&email)
+        .bind(&handle)
+        .bind(&display_name)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| {
+            if error
+                .as_database_error()
+                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+            {
+                ApiError::Conflict
+            } else {
+                ApiError::Database(error)
+            }
+        })?;
+    }
+    transaction.commit().await?;
     let desktop_attempt = sqlx::query(
         "UPDATE desktop_login_attempts SET oidc_subject = $2 \
          WHERE oidc_state = $1 AND expires_at > NOW() AND oidc_subject IS NULL",
@@ -755,8 +815,8 @@ async fn read_session(
             user: None,
         }));
     };
-    let user = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT users.oidc_subject, users.email, users.display_name FROM sessions \
+    let user = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT users.oidc_subject, users.email, users.handle, users.display_name FROM sessions \
          JOIN users ON users.oidc_subject = sessions.oidc_subject \
          WHERE sessions.token_hash = $1 AND sessions.expires_at > NOW()",
     )
@@ -765,9 +825,10 @@ async fn read_session(
     .await?;
     Ok(Json(AuthSession {
         authenticated: user.is_some(),
-        user: user.map(|(subject, email, display_name)| SessionUser {
+        user: user.map(|(subject, email, handle, display_name)| SessionUser {
             subject,
             email,
+            handle,
             display_name,
         }),
     }))

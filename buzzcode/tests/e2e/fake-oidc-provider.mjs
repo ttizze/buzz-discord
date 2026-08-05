@@ -27,6 +27,8 @@ function base64Url(value) {
 function idToken(nonce, mode, user) {
   const now = Math.floor(Date.now() / 1000);
   const email = `${user}@example.com`;
+  const preferredUsername = user === "owner-handle-copy" ? "owner" : user;
+  const displayName = user.startsWith("owner") ? "owner" : user;
   const header = base64Url(JSON.stringify({ alg: "RS256", kid: keyId }));
   const claims = {
     iss: issuer,
@@ -37,9 +39,11 @@ function idToken(nonce, mode, user) {
     nonce,
     email,
     email_verified: true,
-    preferred_username: user,
+    name: displayName,
+    preferred_username: preferredUsername,
   };
   if (mode === "missing-email") delete claims.email;
+  if (mode === "missing-username") delete claims.preferred_username;
   const payload = base64Url(JSON.stringify(claims));
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), {
     key: privateKey,
@@ -70,6 +74,7 @@ const server = createServer(async (request, response) => {
         "nonce",
         "email",
         "email_verified",
+        "name",
         "preferred_username",
       ],
     });
