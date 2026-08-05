@@ -78,9 +78,15 @@ export type MessagePage = Readonly<{
 
 export type DirectMessage = Readonly<{
   id: string;
-  peerSubject: string;
+  peerUserId: string;
   peerHandle: string;
   peerDisplayName: string;
+}>;
+
+export type UserSearchResult = Readonly<{
+  userId: string;
+  handle: string;
+  displayName: string;
 }>;
 
 export type DirectMessageMessage = Readonly<{
@@ -299,7 +305,7 @@ function parseDirectMessage(value: unknown): DirectMessage {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
-    typeof value.peerSubject !== "string" ||
+    typeof value.peerUserId !== "string" ||
     typeof value.peerHandle !== "string" ||
     typeof value.peerDisplayName !== "string"
   ) {
@@ -307,9 +313,25 @@ function parseDirectMessage(value: unknown): DirectMessage {
   }
   return {
     id: value.id,
-    peerSubject: value.peerSubject,
+    peerUserId: value.peerUserId,
     peerHandle: value.peerHandle,
     peerDisplayName: value.peerDisplayName,
+  };
+}
+
+function parseUserSearchResult(value: unknown): UserSearchResult {
+  if (
+    !isRecord(value) ||
+    typeof value.userId !== "string" ||
+    typeof value.handle !== "string" ||
+    typeof value.displayName !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid user search result");
+  }
+  return {
+    userId: value.userId,
+    handle: value.handle,
+    displayName: value.displayName,
   };
 }
 
@@ -681,17 +703,32 @@ export async function listDirectMessages(): Promise<readonly DirectMessage[]> {
 }
 
 export async function startDirectMessage(
-  peerHandle: string,
+  peerUserId: string,
 ): Promise<DirectMessage> {
   return parseResponse(
     await fetch(`${apiOrigin}/api/direct-messages`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ peerHandle }),
+      body: JSON.stringify({ peerUserId }),
     }),
     parseDirectMessage,
   );
+}
+
+export async function searchUsers(
+  query: string,
+): Promise<readonly UserSearchResult[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/users/search?q=${encodeURIComponent(query)}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid user search response");
+  }
+  return value.map(parseUserSearchResult);
 }
 
 function directMessageMessagesUrl(directMessageId: string): string {

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlJson;
 
 use super::{
-    ApiError, AppState, EditMessage, ReactionInput, ReactionSummary, ReplyTarget, normalize_handle,
-    require_origin, require_session,
+    ApiError, AppState, EditMessage, ReactionInput, ReactionSummary, ReplyTarget, require_origin,
+    require_session,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,16 +54,24 @@ impl DirectMessageEvent {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct StartDirectMessage {
-    peer_handle: String,
+    peer_user_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DirectMessageSummary {
     id: String,
-    peer_subject: String,
+    peer_user_id: String,
     peer_handle: String,
     peer_display_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserSearchResult {
+    user_id: String,
+    handle: String,
+    display_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +183,7 @@ fn message_from_row(row: DirectMessageRow) -> DirectMessageMessage {
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/users/search", get(search_users))
         .route("/api/direct-messages", get(list).post(start))
         .route("/api/direct-messages/events", get(events))
         .route(
@@ -197,6 +206,56 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/api/direct-messages/{direct_message_id}/audit",
             get(list_audit),
         )
+}
+
+async fn search_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Vec<UserSearchResult>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    let search = query.q.trim().trim_start_matches('@');
+    if search.is_empty() || search.len() > 64 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let users = sqlx::query_as::<_, (String, String, String)>(
+        "WITH accessible_servers AS ( \
+             SELECT servers.id FROM servers \
+             LEFT JOIN server_members viewer ON viewer.server_id = servers.id \
+                 AND viewer.oidc_subject = $1 \
+             WHERE servers.owner_subject = $1 OR viewer.oidc_subject IS NOT NULL \
+         ), eligible_users AS ( \
+             SELECT servers.owner_subject AS oidc_subject FROM servers \
+             JOIN accessible_servers ON accessible_servers.id = servers.id \
+             UNION SELECT server_members.oidc_subject FROM server_members \
+             JOIN accessible_servers ON accessible_servers.id = server_members.server_id \
+             UNION SELECT CASE WHEN participant_one_subject = $1 \
+                 THEN participant_two_subject ELSE participant_one_subject END \
+                 FROM direct_messages \
+                 WHERE $1 IN (participant_one_subject, participant_two_subject) \
+             UNION SELECT oidc_subject FROM users WHERE LOWER(handle) = LOWER($2) \
+         ) \
+         SELECT users.oidc_subject, users.handle, users.display_name FROM users \
+         JOIN eligible_users ON eligible_users.oidc_subject = users.oidc_subject \
+         WHERE users.oidc_subject <> $1 AND ( \
+             POSITION(LOWER($2) IN LOWER(display_name)) > 0 OR \
+             POSITION(LOWER($2) IN LOWER(handle)) > 0) \
+         ORDER BY CASE WHEN LOWER(handle) = LOWER($2) THEN 0 ELSE 1 END, \
+             LOWER(display_name), handle LIMIT 10",
+    )
+    .bind(subject)
+    .bind(search)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(user_id, handle, display_name)| UserSearchResult {
+        user_id,
+        handle,
+        display_name,
+    })
+    .collect();
+    Ok(Json(users))
 }
 
 async fn list_audit(
@@ -275,9 +334,9 @@ async fn summary(
     .fetch_optional(&state.pool)
     .await?
     .map(
-        |(id, peer_subject, peer_handle, peer_display_name)| DirectMessageSummary {
+        |(id, peer_user_id, peer_handle, peer_display_name)| DirectMessageSummary {
             id,
-            peer_subject,
+            peer_user_id,
             peer_handle,
             peer_display_name,
         },
@@ -307,9 +366,9 @@ async fn list(
     Ok(Json(
         rows.into_iter()
             .map(
-                |(id, peer_subject, peer_handle, peer_display_name)| DirectMessageSummary {
+                |(id, peer_user_id, peer_handle, peer_display_name)| DirectMessageSummary {
                     id,
-                    peer_subject,
+                    peer_user_id,
                     peer_handle,
                     peer_display_name,
                 },
@@ -325,10 +384,9 @@ async fn start(
 ) -> Result<Json<DirectMessageSummary>, ApiError> {
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
-    let peer_handle = normalize_handle(&input.peer_handle).ok_or(ApiError::InvalidRequest)?;
     let peer_subject =
-        sqlx::query_scalar::<_, String>("SELECT oidc_subject FROM users WHERE handle = $1")
-            .bind(peer_handle)
+        sqlx::query_scalar::<_, String>("SELECT oidc_subject FROM users WHERE oidc_subject = $1")
+            .bind(input.peer_user_id)
             .fetch_optional(&state.pool)
             .await?
             .ok_or(ApiError::NotFound)?;

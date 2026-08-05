@@ -16,6 +16,7 @@ async function signIn(page: Page, user: string): Promise<void> {
   await page.goto(harness.applicationUrl);
   await page.getByRole("button", { name: "Sign in with a passkey" }).click();
   await page.getByRole("button", { name: "Continue with passkey" }).click();
+  await expect(page.getByText(`${user}@example.com`)).toBeVisible();
 }
 
 test("exchanges a durable one-to-one Direct Message outside Servers", async ({
@@ -34,8 +35,8 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await expect(
     owner.getByRole("heading", { name: "Direct Messages" }),
   ).toBeVisible();
-  await owner.getByLabel("Direct Message handle").fill("@member");
-  await owner.getByRole("button", { name: "Start Direct Message" }).click();
+  await owner.getByLabel("Find or start a conversation").fill("member");
+  await owner.getByRole("button", { name: "member @member" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText("member");
   await expect(owner.getByText("member@example.com")).toHaveCount(0);
   await expect(member.getByRole("button", { name: "owner" })).toBeVisible();
@@ -48,8 +49,8 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
     .getAttribute("data-direct-message-id");
   expect(directMessageId).toBeTruthy();
 
-  await owner.getByLabel("Direct Message handle").fill("@member");
-  await owner.getByRole("button", { name: "Start Direct Message" }).click();
+  await owner.getByLabel("Find or start a conversation").fill("@member");
+  await owner.getByRole("button", { name: "member @member" }).click();
   await expect(owner.getByRole("button", { name: "member" })).toHaveCount(1);
   await expect(owner.getByRole("button", { name: "member" })).toHaveAttribute(
     "data-direct-message-id",
@@ -301,4 +302,102 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await intruderContext.close();
   await memberContext.close();
   await ownerContext.close();
+});
+
+test("finds people by Display Name and distinguishes duplicate names by username", async ({
+  browser,
+}) => {
+  const ownerContext = await browser.newContext();
+  const firstAliceContext = await browser.newContext();
+  const secondAliceContext = await browser.newContext();
+  const hiddenAliceContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const firstAlice = await firstAliceContext.newPage();
+  const secondAlice = await secondAliceContext.newPage();
+  const hiddenAlice = await hiddenAliceContext.newPage();
+
+  await signIn(owner, "owner");
+  await owner.getByLabel("Server name").fill("People Search Server");
+  await owner.getByRole("button", { name: "Create Server" }).click();
+  await expect(owner.getByTestId("active-server-name")).toHaveText(
+    "People Search Server",
+  );
+
+  await owner.getByLabel("Invite email").fill("alice_one@example.com");
+  await owner.getByRole("button", { name: "Create invitation" }).click();
+  const firstInvitation = await owner
+    .getByTestId("invitation-code")
+    .textContent();
+  await signIn(firstAlice, "alice_one");
+  await firstAlice.getByLabel("Invitation code").fill(firstInvitation ?? "");
+  await firstAlice.getByRole("button", { name: "Join Server" }).click();
+  await expect(firstAlice.getByTestId("active-server-name")).toHaveText(
+    "People Search Server",
+  );
+
+  await owner.getByLabel("Invite email").fill("alice_two@example.com");
+  await owner.getByRole("button", { name: "Create invitation" }).click();
+  const secondInvitationOutput = owner.getByTestId("invitation-code");
+  await expect(secondInvitationOutput).not.toHaveText(firstInvitation ?? "");
+  const secondInvitation = await secondInvitationOutput.textContent();
+  await signIn(secondAlice, "alice_two");
+  await secondAlice.getByLabel("Invitation code").fill(secondInvitation ?? "");
+  await secondAlice.getByRole("button", { name: "Join Server" }).click();
+  await expect(secondAlice.getByTestId("active-server-name")).toHaveText(
+    "People Search Server",
+  );
+
+  await signIn(hiddenAlice, "alice_hidden");
+
+  const peopleSearch = await owner.evaluate(
+    async ({ apiOrigin }) => {
+      const response = await fetch(`${apiOrigin}/api/users/search?q=Alice`, {
+        credentials: "include",
+      });
+      return { status: response.status, body: await response.text() };
+    },
+    { apiOrigin: harness.apiOrigin },
+  );
+  expect(peopleSearch.status, peopleSearch.body).toBe(200);
+  expect(
+    (JSON.parse(peopleSearch.body) as { handle: string }[]).map(
+      ({ handle }) => handle,
+    ),
+  ).toEqual(["alice_one", "alice_two"]);
+
+  await owner.getByLabel("Find or start a conversation").fill("Alice");
+  await expect(
+    owner.getByRole("button", { name: "Alice @alice_one" }),
+  ).toBeVisible();
+  await expect(
+    owner.getByRole("button", { name: "Alice @alice_two" }),
+  ).toBeVisible();
+  await expect(
+    owner.getByRole("button", { name: "Alice @alice_hidden" }),
+  ).toHaveCount(0);
+
+  await owner.getByRole("button", { name: "Alice @alice_two" }).click();
+  await expect(owner.getByTestId("active-dm-name")).toHaveText("Alice");
+  await expect(
+    owner.getByRole("navigation", { name: "Direct Messages" }),
+  ).toContainText("Alice");
+
+  const legacyHandleStatus = await owner.evaluate(
+    async ({ apiOrigin }) =>
+      (
+        await fetch(`${apiOrigin}/api/direct-messages`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ peerHandle: "alice_two" }),
+        })
+      ).status,
+    { apiOrigin: harness.apiOrigin },
+  );
+  expect([400, 422]).toContain(legacyHandleStatus);
+
+  await ownerContext.close();
+  await firstAliceContext.close();
+  await secondAliceContext.close();
+  await hiddenAliceContext.close();
 });

@@ -9,9 +9,11 @@ import {
   getDirectMessageMessage,
   listDirectMessageMessages,
   listDirectMessages,
+  searchUsers,
   setDirectMessageReaction,
   startDirectMessage,
   subscribeToDirectMessageEvents,
+  type UserSearchResult,
 } from "./api";
 
 type SignedInSession = AuthSession & { authenticated: true };
@@ -32,7 +34,11 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
     readonly DirectMessage[]
   >([]);
   const [active, setActive] = useState<DirectMessage | null>(null);
-  const [peerHandle, setPeerHandle] = useState("");
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const [people, setPeople] = useState<readonly UserSearchResult[]>([]);
+  const [peopleStatus, setPeopleStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const [messages, setMessages] = useState<readonly DirectMessageMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [replyingTo, setReplyingTo] = useState<DirectMessageMessage | null>(
@@ -122,9 +128,37 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
     if (active !== null) void reloadMessages(active.id);
   }, [active, reloadMessages]);
 
-  async function openDirectMessage() {
-    const created = await startDirectMessage(peerHandle);
-    setPeerHandle("");
+  useEffect(() => {
+    const query = peopleQuery.trim();
+    if (query === "") {
+      setPeople([]);
+      setPeopleStatus("idle");
+      return;
+    }
+    let current = true;
+    setPeople([]);
+    setPeopleStatus("loading");
+    const timeout = window.setTimeout(() => {
+      void searchUsers(query)
+        .then((results) => {
+          if (!current) return;
+          setPeople(results);
+          setPeopleStatus("ready");
+        })
+        .catch(() => {
+          if (current) setPeopleStatus("error");
+        });
+    }, 150);
+    return () => {
+      current = false;
+      window.clearTimeout(timeout);
+    };
+  }, [peopleQuery]);
+
+  async function openDirectMessage(person: UserSearchResult) {
+    const created = await startDirectMessage(person.userId);
+    setPeopleQuery("");
+    setPeople([]);
     await reloadDirectMessages(created.id);
     setActive(created);
   }
@@ -175,23 +209,38 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
           {connected ? "Connected" : "Disconnected"}
         </span>
       </header>
-      <div className="composer">
-        <label htmlFor="direct-message-handle">Direct Message handle</label>
+      <div className="dm-person-picker">
+        <label htmlFor="direct-message-person">
+          Find or start a conversation
+        </label>
         <input
-          id="direct-message-handle"
-          value={peerHandle}
-          placeholder="@handle"
+          id="direct-message-person"
+          value={peopleQuery}
+          placeholder="Search by Display Name or @username"
           autoCapitalize="none"
           spellCheck={false}
-          onChange={(event) => setPeerHandle(event.target.value)}
+          autoComplete="off"
+          onChange={(event) => setPeopleQuery(event.target.value)}
         />
-        <button
-          type="button"
-          disabled={peerHandle.trim() === ""}
-          onClick={() => void openDirectMessage()}
-        >
-          Start Direct Message
-        </button>
+        {peopleQuery.trim() !== "" && (
+          <div className="dm-person-results">
+            {people.map((person) => (
+              <button
+                key={person.userId}
+                type="button"
+                onClick={() => void openDirectMessage(person)}
+              >
+                <strong>{person.displayName}</strong>
+                <span>@{person.handle}</span>
+              </button>
+            ))}
+            {peopleStatus === "loading" && <p>Searching…</p>}
+            {peopleStatus === "ready" && people.length === 0 && (
+              <p>No one found.</p>
+            )}
+            {peopleStatus === "error" && <p>Search is unavailable.</p>}
+          </div>
+        )}
       </div>
       <div className="dm-layout">
         <nav aria-label="Direct Messages" className="channel-list">
@@ -203,7 +252,7 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
               aria-current={active?.id === directMessage.id}
               onClick={() => setActive(directMessage)}
             >
-              {directMessage.peerDisplayName} @{directMessage.peerHandle}
+              {directMessage.peerDisplayName}
             </button>
           ))}
         </nav>

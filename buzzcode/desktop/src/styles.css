@@ -413,8 +413,45 @@ button:disabled {
   margin-top: 1rem;
 }
 
-.direct-messages > .composer {
-  grid-template-columns: auto minmax(12rem, 1fr) auto;
+.dm-person-picker {
+  position: relative;
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.dm-person-results {
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  right: 0;
+  left: 0;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid #3e587e;
+  border-radius: 0.6rem;
+  background: #101b30;
+  box-shadow: 0 1rem 2rem rgb(0 0 0 / 35%);
+}
+
+.dm-person-results button {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: #e8edf5;
+  text-align: left;
+  background: transparent;
+}
+
+.dm-person-results button:hover,
+.dm-person-results button:focus-visible {
+  background: #243653;
+}
+
+.dm-person-results span,
+.dm-person-results p {
+  color: #8fa1bc;
 }
 
 .dm-layout {

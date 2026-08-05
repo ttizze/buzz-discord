@@ -28,7 +28,11 @@ function idToken(nonce, mode, user) {
   const now = Math.floor(Date.now() / 1000);
   const email = `${user}@example.com`;
   const preferredUsername = user === "owner-handle-copy" ? "owner" : user;
-  const displayName = user.startsWith("owner") ? "owner" : user;
+  const displayName = user.startsWith("owner")
+    ? "owner"
+    : user.startsWith("alice_")
+      ? "Alice"
+      : user;
   const header = base64Url(JSON.stringify({ alg: "RS256", kid: keyId }));
   const claims = {
     iss: issuer,

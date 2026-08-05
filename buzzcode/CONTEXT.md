@@ -5,8 +5,16 @@ Buzzcode is a shared workspace where people and agents communicate and work toge
 ## Language
 
 **Handle**:
-A global, unique, lowercase username such as `@phibi` used to find and distinguish a user. A user's stable database identity remains its internal subject, so an existing Direct Message survives later Handle changes. Display names and Server nicknames are presentation and may overlap; email is reserved for authentication and invitations.
+A global, unique, lowercase username such as `@phibi` used for exact account lookup and disambiguation. It is secondary to Display Name in ordinary presentation. A user's stable database identity remains its internal subject, so an existing Direct Message or User Mention survives later Handle changes. Display names and Server Nicknames are presentation and may overlap; email is reserved for authentication and invitations.
 _Avoid_: Email address, display name, internal subject
+
+**Display Name**:
+A non-unique, account-wide presentation name used as the user's primary visible identity. People pickers match both Display Name and Handle, show Handle secondarily when disambiguation is needed, and store the selected user's stable identity rather than either name.
+_Avoid_: Handle, Server Nickname, email address
+
+**Server Nickname**:
+An optional, non-unique presentation name for one member inside one server. It takes priority over Display Name when rendering that member or a User Mention within the server, but never renames a cross-server Direct Message.
+_Avoid_: Display Name, Handle, role
 
 **Server**:
 An isolated collaboration space containing its own channels, members, and projects. A user may belong to and switch between multiple servers, and a server remains usable for chat without a connected remote environment.
@@ -77,8 +85,12 @@ A direct server channel available to explicitly added members and server adminis
 _Avoid_: Private project, group direct message
 
 **Direct Message**:
-A one-to-one message stream between a user and either one other human or one local agent outside any server hierarchy. Group direct messages do not exist. A personal project may be selected as context only when the other party is an agent.
+A one-to-one message stream between a user and either one other human or one local agent outside any server hierarchy. Group direct messages do not exist. A human recipient is selected from a people picker that searches eligible Display Names and Handles, while the Direct Message stores stable user identities. A personal project may be selected as context only when the other party is an agent.
 _Avoid_: Channel, conversation
+
+**User Mention**:
+A message reference to one stable user identity. Typing after `@` searches accessible server members by Server Nickname, Display Name, and Handle; choosing a candidate stores the user identity, not the typed name. It renders as Server Nickname, then Display Name, then Handle, so renaming never changes who was mentioned.
+_Avoid_: Plain text name, email address, Agent Mention
 
 **Agent**:
 An independent AI execution endpoint, such as Codex or Claude Code, that can be invoked from a channel or direct message and can author messages. Agents are not users, members, or a shared abstract actor type.
