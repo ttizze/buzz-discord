@@ -109,6 +109,16 @@ enum ServerEvent {
         #[serde(skip)]
         server_id: String,
     },
+    ChannelCreated {
+        #[serde(skip)]
+        server_id: String,
+        channel: ChannelSummary,
+    },
+    MessageCreated {
+        #[serde(skip)]
+        server_id: String,
+        message: ChannelMessage,
+    },
 }
 
 impl ServerEvent {
@@ -116,7 +126,9 @@ impl ServerEvent {
         match self {
             Self::DurableStateChanged { server_id, .. }
             | Self::MembershipChanged { server_id }
-            | Self::ServerDeleted { server_id } => server_id,
+            | Self::ServerDeleted { server_id }
+            | Self::ChannelCreated { server_id, .. }
+            | Self::MessageCreated { server_id, .. } => server_id,
         }
     }
 }
@@ -219,6 +231,61 @@ struct ServerSummary {
     id: String,
     name: String,
     role: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelSummary {
+    id: String,
+    name: String,
+    visibility: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateChannel {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMessage {
+    content: String,
+    reply_to_message_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagePageQuery {
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplyTarget {
+    id: String,
+    content: String,
+    author_display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelMessage {
+    id: String,
+    sequence: i64,
+    channel_id: String,
+    content: String,
+    author_subject: String,
+    author_display_name: String,
+    created_at: String,
+    reply_to: Option<ReplyTarget>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagePage {
+    messages: Vec<ChannelMessage>,
+    next_before: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -359,6 +426,14 @@ pub async fn serve(
             axum::routing::put(transfer_ownership),
         )
         .route("/api/servers/{server_id}/audit", get(list_audit))
+        .route(
+            "/api/servers/{server_id}/channels",
+            get(list_channels).post(create_channel),
+        )
+        .route(
+            "/api/servers/{server_id}/channels/{channel_id}/messages",
+            get(list_messages).post(create_message),
+        )
         .route(
             "/api/servers/{server_id}/bootstrap",
             get(read_state).put(write_state),
@@ -1118,6 +1193,226 @@ async fn create_server(
     ))
 }
 
+async fn list_channels(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ChannelSummary>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let channels = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, name, visibility FROM channels \
+         WHERE server_id = $1 AND visibility = 'open' ORDER BY created_at, id",
+    )
+    .bind(server_id)
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|(id, name, visibility)| ChannelSummary {
+        id,
+        name,
+        visibility,
+    })
+    .collect();
+    Ok(Json(channels))
+}
+
+async fn create_channel(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<CreateChannel>,
+) -> Result<(StatusCode, Json<ChannelSummary>), ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_manager(&state.pool, &subject, &server_id).await?;
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let id = CsrfToken::new_random().secret().to_owned();
+    let mut transaction = state.pool.begin().await?;
+    let inserted = sqlx::query_scalar::<_, String>(
+        "INSERT INTO channels (id, server_id, name, created_by_subject) \
+         VALUES ($1, $2, $3, $4) ON CONFLICT (server_id, name) DO NOTHING RETURNING id",
+    )
+    .bind(&id)
+    .bind(&server_id)
+    .bind(name)
+    .bind(&subject)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if inserted.is_none() {
+        return Err(ApiError::Conflict);
+    }
+    sqlx::query(
+        "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+         VALUES ($1, $2, 'channel.created', jsonb_build_object('channelId', $3::TEXT))",
+    )
+    .bind(&server_id)
+    .bind(&subject)
+    .bind(&id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    let channel = ChannelSummary {
+        id,
+        name: name.to_owned(),
+        visibility: "open".to_owned(),
+    };
+    let _ = state.changes.send(ServerEvent::ChannelCreated {
+        server_id,
+        channel: channel.clone(),
+    });
+    Ok((StatusCode::CREATED, Json(channel)))
+}
+
+type MessageRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn message_from_row(row: MessageRow) -> ChannelMessage {
+    ChannelMessage {
+        id: row.0,
+        sequence: row.1,
+        channel_id: row.2,
+        content: row.3,
+        author_subject: row.4,
+        author_display_name: row.5,
+        created_at: row.6,
+        reply_to: row.7.map(|id| ReplyTarget {
+            id,
+            content: row.8.unwrap_or_default(),
+            author_display_name: row.9.unwrap_or_default(),
+        }),
+    }
+}
+
+const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.channel_id, message.content, \
+     message.author_subject, author.display_name, \
+     TO_CHAR(message.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+     reply.id, reply.content, reply_author.display_name \
+     FROM channel_messages message \
+     JOIN users author ON author.oidc_subject = message.author_subject \
+     LEFT JOIN channel_messages reply ON reply.id = message.reply_to_message_id \
+     LEFT JOIN users reply_author ON reply_author.oidc_subject = reply.author_subject";
+
+async fn list_messages(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id)): Path<(String, String)>,
+    Query(query): Query<MessagePageQuery>,
+    headers: HeaderMap,
+) -> Result<Json<MessagePage>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let channel_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM channels \
+         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
+    )
+    .bind(&channel_id)
+    .bind(&server_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !channel_exists {
+        return Err(ApiError::NotFound);
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let sql = format!(
+        "{MESSAGE_SELECT} WHERE message.channel_id = $1 \
+         AND ($2::BIGINT IS NULL OR message.sequence < $2) \
+         ORDER BY message.sequence DESC LIMIT $3"
+    );
+    let mut rows = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(channel_id)
+        .bind(query.before)
+        .bind(limit + 1)
+        .fetch_all(&state.pool)
+        .await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_before = has_more.then(|| rows.last().map(|row| row.1)).flatten();
+    rows.reverse();
+    Ok(Json(MessagePage {
+        messages: rows.into_iter().map(message_from_row).collect(),
+        next_before,
+    }))
+}
+
+async fn create_message(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<CreateMessage>,
+) -> Result<(StatusCode, Json<ChannelMessage>), ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let content = input.content.trim();
+    if content.is_empty() || content.chars().count() > 4000 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let channel_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM channels \
+         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
+    )
+    .bind(&channel_id)
+    .bind(&server_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !channel_exists {
+        return Err(ApiError::NotFound);
+    }
+    if let Some(reply_id) = input.reply_to_message_id.as_deref() {
+        let target_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM channel_messages WHERE id = $1 AND channel_id = $2)",
+        )
+        .bind(reply_id)
+        .bind(&channel_id)
+        .fetch_one(&state.pool)
+        .await?;
+        if !target_exists {
+            return Err(ApiError::InvalidRequest);
+        }
+    }
+    let id = CsrfToken::new_random().secret().to_owned();
+    sqlx::query(
+        "INSERT INTO channel_messages \
+         (id, server_id, channel_id, author_subject, content, reply_to_message_id) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&id)
+    .bind(&server_id)
+    .bind(&channel_id)
+    .bind(&subject)
+    .bind(content)
+    .bind(input.reply_to_message_id)
+    .execute(&state.pool)
+    .await?;
+    let sql = format!("{MESSAGE_SELECT} WHERE message.id = $1");
+    let message = message_from_row(
+        sqlx::query_as::<_, MessageRow>(&sql)
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?,
+    );
+    let _ = state.changes.send(ServerEvent::MessageCreated {
+        server_id,
+        message: message.clone(),
+    });
+    Ok((StatusCode::CREATED, Json(message)))
+}
+
 async fn require_member(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
     if server_role(pool, subject, server_id).await?.is_none() {
         return Err(ApiError::Unauthorized);
@@ -1185,6 +1480,14 @@ async fn events(
                 Ok(event) => {
                     if event.server_id() != server_id {
                         continue;
+                    }
+                    if matches!(event, ServerEvent::ServerDeleted { .. }) {
+                        let Ok(payload) = serde_json::to_string(&event) else {
+                            tracing::error!("failed to serialize server deletion event");
+                            break;
+                        };
+                        let _ = sender.send(Message::Text(payload.into())).await;
+                        break;
                     }
                     match server_role(&state.pool, &subject, &server_id).await {
                         Ok(Some(_)) => {}

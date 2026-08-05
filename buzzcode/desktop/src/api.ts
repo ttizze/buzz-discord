@@ -8,7 +8,9 @@ export type ServerEvent =
       state: DurableState;
     }>
   | Readonly<{ type: "membershipChanged" }>
-  | Readonly<{ type: "serverDeleted" }>;
+  | Readonly<{ type: "serverDeleted" }>
+  | Readonly<{ type: "channelCreated"; channel: Channel }>
+  | Readonly<{ type: "messageCreated"; message: ChannelMessage }>;
 
 export type AuthSession =
   | Readonly<{ authenticated: false }>
@@ -26,6 +28,32 @@ export type Server = Readonly<{
   id: string;
   name: string;
   role: "owner" | "admin" | "member";
+}>;
+
+export type Channel = Readonly<{
+  id: string;
+  name: string;
+  visibility: "open";
+}>;
+
+export type ChannelMessage = Readonly<{
+  id: string;
+  sequence: number;
+  channelId: string;
+  content: string;
+  authorSubject: string;
+  authorDisplayName: string;
+  createdAt: string;
+  replyTo?: Readonly<{
+    id: string;
+    content: string;
+    authorDisplayName: string;
+  }>;
+}>;
+
+export type MessagePage = Readonly<{
+  messages: readonly ChannelMessage[];
+  nextBefore?: number;
 }>;
 
 export type ServerMember = Readonly<{
@@ -73,6 +101,20 @@ function parseDurableState(value: unknown): DurableState {
 function parseServerEvent(value: unknown): ServerEvent {
   if (
     isRecord(value) &&
+    value.type === "channelCreated" &&
+    isRecord(value.channel)
+  ) {
+    return { type: value.type, channel: parseChannel(value.channel) };
+  }
+  if (
+    isRecord(value) &&
+    value.type === "messageCreated" &&
+    isRecord(value.message)
+  ) {
+    return { type: value.type, message: parseChannelMessage(value.message) };
+  }
+  if (
+    isRecord(value) &&
     (value.type === "membershipChanged" || value.type === "serverDeleted")
   ) {
     return { type: value.type };
@@ -85,6 +127,62 @@ function parseServerEvent(value: unknown): ServerEvent {
     throw new Error("Buzzcode API returned an invalid server event");
   }
   return { type: value.type, state: parseDurableState(value.state) };
+}
+
+function parseChannel(value: unknown): Channel {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    value.visibility !== "open"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Channel");
+  }
+  return { id: value.id, name: value.name, visibility: value.visibility };
+}
+
+function parseChannelMessage(value: unknown): ChannelMessage {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.sequence !== "number" ||
+    typeof value.channelId !== "string" ||
+    typeof value.content !== "string" ||
+    typeof value.authorSubject !== "string" ||
+    typeof value.authorDisplayName !== "string" ||
+    typeof value.createdAt !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Channel Message");
+  }
+  const reply = value.replyTo;
+  if (
+    reply !== undefined &&
+    reply !== null &&
+    (!isRecord(reply) ||
+      typeof reply.id !== "string" ||
+      typeof reply.content !== "string" ||
+      typeof reply.authorDisplayName !== "string")
+  ) {
+    throw new Error("Buzzcode API returned an invalid Reply target");
+  }
+  return {
+    id: value.id,
+    sequence: value.sequence,
+    channelId: value.channelId,
+    content: value.content,
+    authorSubject: value.authorSubject,
+    authorDisplayName: value.authorDisplayName,
+    createdAt: value.createdAt,
+    ...(isRecord(reply)
+      ? {
+          replyTo: {
+            id: String(reply.id),
+            content: String(reply.content),
+            authorDisplayName: String(reply.authorDisplayName),
+          },
+        }
+      : {}),
+  };
 }
 
 function parseMember(value: unknown): ServerMember {
@@ -216,6 +314,89 @@ export async function createServer(name: string): Promise<Server> {
       body: JSON.stringify({ name }),
     }),
     parseServer,
+  );
+}
+
+export async function listChannels(
+  serverId: string,
+): Promise<readonly Channel[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value))
+    throw new Error("Buzzcode API returned an invalid Channel list");
+  return value.map(parseChannel);
+}
+
+export async function createChannel(
+  serverId: string,
+  name: string,
+): Promise<Channel> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    ),
+    parseChannel,
+  );
+}
+
+export async function listChannelMessages(
+  serverId: string,
+  channelId: string,
+  before?: number,
+): Promise<MessagePage> {
+  const query =
+    before === undefined ? "" : `?before=${encodeURIComponent(before)}`;
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages${query}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!isRecord(value) || !Array.isArray(value.messages)) {
+    throw new Error("Buzzcode API returned an invalid Message page");
+  }
+  if (
+    value.nextBefore !== undefined &&
+    value.nextBefore !== null &&
+    typeof value.nextBefore !== "number"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Message cursor");
+  }
+  return {
+    messages: value.messages.map(parseChannelMessage),
+    ...(typeof value.nextBefore === "number"
+      ? { nextBefore: value.nextBefore }
+      : {}),
+  };
+}
+
+export async function createChannelMessage(
+  serverId: string,
+  channelId: string,
+  content: string,
+  replyToMessageId?: string,
+): Promise<ChannelMessage> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content, replyToMessageId }),
+      },
+    ),
+    parseChannelMessage,
   );
 }
 
@@ -400,14 +581,29 @@ export function subscribeToServerEvents(
   onEvent: (event: ServerEvent) => void,
   onConnectionChange: (connected: boolean) => void,
 ): () => void {
-  const websocket = new WebSocket(
-    `${websocketOrigin}/api/servers/${encodeURIComponent(serverId)}/events`,
-  );
-  websocket.addEventListener("open", () => onConnectionChange(true));
-  websocket.addEventListener("close", () => onConnectionChange(false));
-  websocket.addEventListener("message", (message) => {
-    const event = parseServerEvent(JSON.parse(String(message.data)) as unknown);
-    onEvent(event);
-  });
-  return () => websocket.close();
+  let stopped = false;
+  let websocket: WebSocket | undefined;
+  let reconnectTimer: number | undefined;
+  const connect = () => {
+    websocket = new WebSocket(
+      `${websocketOrigin}/api/servers/${encodeURIComponent(serverId)}/events`,
+    );
+    websocket.addEventListener("open", () => onConnectionChange(true));
+    websocket.addEventListener("close", () => {
+      onConnectionChange(false);
+      if (!stopped) reconnectTimer = window.setTimeout(connect, 500);
+    });
+    websocket.addEventListener("message", (message) => {
+      const event = parseServerEvent(
+        JSON.parse(String(message.data)) as unknown,
+      );
+      onEvent(event);
+    });
+  };
+  connect();
+  return () => {
+    stopped = true;
+    if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    websocket?.close();
+  };
 }

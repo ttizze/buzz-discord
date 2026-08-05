@@ -4,11 +4,17 @@ import {
   type AuditEntry,
   type AuthSession,
   acceptInvitation,
+  type Channel,
+  type ChannelMessage,
   completeDesktopLogin,
+  createChannel,
+  createChannelMessage,
   createInvitation,
   createServer,
   deleteServer,
   listAudit,
+  listChannelMessages,
+  listChannels,
   listMembers,
   listServers,
   loginUrl,
@@ -33,6 +39,13 @@ function AuthenticatedApp({
   const [servers, setServers] = useState<readonly Server[] | null>(null);
   const [activeServer, setActiveServer] = useState<Server | null>(null);
   const [serverName, setServerName] = useState("");
+  const [channels, setChannels] = useState<readonly Channel[] | null>(null);
+  const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
+  const [channelName, setChannelName] = useState("");
+  const [messages, setMessages] = useState<readonly ChannelMessage[]>([]);
+  const [nextBefore, setNextBefore] = useState<number | undefined>();
+  const [messageDraft, setMessageDraft] = useState("");
+  const [replyingTo, setReplyingTo] = useState<ChannelMessage | null>(null);
   const [durableValue, setDurableValue] = useState("Loading…");
   const [draft, setDraft] = useState("");
   const [connected, setConnected] = useState(false);
@@ -42,6 +55,21 @@ function AuthenticatedApp({
   const [createdInvite, setCreatedInvite] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
+  const messageChannelId = useRef<string | null>(null);
+
+  const mergeMessages = useCallback(
+    (
+      current: readonly ChannelMessage[],
+      incoming: readonly ChannelMessage[],
+    ): readonly ChannelMessage[] => {
+      const byId = new Map(current.map((message) => [message.id, message]));
+      for (const message of incoming) byId.set(message.id, message);
+      return [...byId.values()].sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+    },
+    [],
+  );
 
   const reloadServers = useCallback(async (preferredId?: string) => {
     const loaded = await listServers();
@@ -63,6 +91,30 @@ function AuthenticatedApp({
     setAudit(loadedAudit);
   }, []);
 
+  const reloadChannels = useCallback(async (serverId: string) => {
+    const loaded = await listChannels(serverId);
+    setChannels(loaded);
+    setActiveChannel((current) => {
+      if (
+        current !== null &&
+        loaded.some((channel) => channel.id === current.id)
+      ) {
+        return current;
+      }
+      return loaded[0] ?? null;
+    });
+  }, []);
+
+  const reloadMessages = useCallback(
+    async (serverId: string, channelId: string) => {
+      const page = await listChannelMessages(serverId, channelId);
+      if (messageChannelId.current !== channelId) return;
+      setMessages((current) => mergeMessages(current, page.messages));
+      setNextBefore(page.nextBefore);
+    },
+    [mergeMessages],
+  );
+
   useEffect(() => {
     void reloadServers();
   }, [reloadServers]);
@@ -71,7 +123,14 @@ function AuthenticatedApp({
     if (activeServer === null) return;
     let current = true;
     setConnected(false);
+    setChannels(null);
+    setActiveChannel(null);
+    messageChannelId.current = null;
+    setMessages([]);
+    setNextBefore(undefined);
+    setReplyingTo(null);
     void reloadManagement(activeServer.id);
+    void reloadChannels(activeServer.id);
     void readDurableState(activeServer.id).then((state) => {
       if (!current) return;
       setDurableValue(state.value);
@@ -84,15 +143,36 @@ function AuthenticatedApp({
         if (event.type === "durableStateChanged") {
           setDurableValue(event.state.value);
           setDraft(event.state.value);
-        } else {
+        } else if (
+          event.type === "membershipChanged" ||
+          event.type === "serverDeleted"
+        ) {
           void reloadServers(activeServer.id);
           void reloadManagement(activeServer.id);
+        } else if (event.type === "channelCreated") {
+          setChannels((existing) => {
+            if (existing?.some((channel) => channel.id === event.channel.id)) {
+              return existing;
+            }
+            return [...(existing ?? []), event.channel];
+          });
+          setActiveChannel((currentChannel) => currentChannel ?? event.channel);
+        } else if (
+          event.type === "messageCreated" &&
+          event.message.channelId === messageChannelId.current
+        ) {
+          setMessages((existing) => mergeMessages(existing, [event.message]));
         }
       },
       (connected) => {
         if (current) {
           setConnected(connected);
-          if (!connected) void reloadServers();
+          if (connected) {
+            void reloadChannels(activeServer.id);
+            if (messageChannelId.current !== null) {
+              void reloadMessages(activeServer.id, messageChannelId.current);
+            }
+          }
         }
       },
     );
@@ -100,13 +180,70 @@ function AuthenticatedApp({
       current = false;
       unsubscribe();
     };
-  }, [activeServer, reloadManagement, reloadServers]);
+  }, [
+    activeServer,
+    mergeMessages,
+    reloadChannels,
+    reloadManagement,
+    reloadMessages,
+    reloadServers,
+  ]);
+
+  useEffect(() => {
+    if (activeServer === null || activeChannel === null) return;
+    messageChannelId.current = activeChannel.id;
+    setMessages([]);
+    setNextBefore(undefined);
+    setReplyingTo(null);
+    void reloadMessages(activeServer.id, activeChannel.id);
+  }, [activeChannel, activeServer, reloadMessages]);
 
   async function addServer() {
     const server = await createServer(serverName);
     setServers((current) => [...(current ?? []), server]);
     setActiveServer(server);
     setServerName("");
+  }
+
+  async function addChannel() {
+    if (activeServer === null) return;
+    const channel = await createChannel(activeServer.id, channelName);
+    setChannels((current) => [
+      ...(current ?? []).filter((item) => item.id !== channel.id),
+      channel,
+    ]);
+    setActiveChannel(channel);
+    setChannelName("");
+  }
+
+  async function sendMessage() {
+    if (activeServer === null || activeChannel === null) return;
+    const message = await createChannelMessage(
+      activeServer.id,
+      activeChannel.id,
+      messageDraft,
+      replyingTo?.id,
+    );
+    setMessages((current) => mergeMessages(current, [message]));
+    setMessageDraft("");
+    setReplyingTo(null);
+  }
+
+  async function loadOlderMessages() {
+    if (
+      activeServer === null ||
+      activeChannel === null ||
+      nextBefore === undefined
+    ) {
+      return;
+    }
+    const page = await listChannelMessages(
+      activeServer.id,
+      activeChannel.id,
+      nextBefore,
+    );
+    setMessages((current) => mergeMessages(current, page.messages));
+    setNextBefore(page.nextBefore);
   }
 
   async function save() {
@@ -213,6 +350,156 @@ function AuthenticatedApp({
             </button>
           ))}
         </nav>
+        <section className="chat-layout" aria-label="Server Channels">
+          <aside className="channel-sidebar">
+            <div className="section-heading">
+              <h3>Channels</h3>
+              <span>{connected ? "Live" : "Connecting"}</span>
+            </div>
+            <nav aria-label="Channels" className="channel-list">
+              {channels?.map((channel) => (
+                <button
+                  key={channel.id}
+                  type="button"
+                  data-channel-id={channel.id}
+                  aria-current={activeChannel?.id === channel.id}
+                  onClick={() => setActiveChannel(channel)}
+                >
+                  <span aria-hidden="true">#</span> {channel.name}
+                </button>
+              ))}
+            </nav>
+            {(activeServer.role === "owner" ||
+              activeServer.role === "admin") && (
+              <div className="channel-create">
+                <label htmlFor="channel-name">Channel name</label>
+                <div className="composer compact">
+                  <input
+                    id="channel-name"
+                    value={channelName}
+                    maxLength={80}
+                    onChange={(event) => setChannelName(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    disabled={channelName.trim() === ""}
+                    onClick={() => void addChannel()}
+                  >
+                    Create Channel
+                  </button>
+                </div>
+              </div>
+            )}
+          </aside>
+          <section className="channel-panel">
+            {activeChannel === null ? (
+              <div className="channel-empty">
+                <h3>No channels yet</h3>
+                <p>Create an Open Channel to start talking with the Server.</p>
+              </div>
+            ) : (
+              <>
+                <header className="channel-header">
+                  <div>
+                    <h3 data-testid="active-channel-name">
+                      # {activeChannel.name}
+                    </h3>
+                    <p>Open Channel · visible to every Server Member</p>
+                  </div>
+                </header>
+                <div
+                  className="message-timeline"
+                  role="log"
+                  aria-label="Messages"
+                  aria-live="polite"
+                >
+                  {nextBefore !== undefined && (
+                    <button
+                      className="load-older"
+                      type="button"
+                      onClick={() => void loadOlderMessages()}
+                    >
+                      Load older messages
+                    </button>
+                  )}
+                  {messages.length === 0 && (
+                    <p className="channel-empty">No messages yet.</p>
+                  )}
+                  {messages.map((message) => (
+                    <article
+                      className="message"
+                      key={message.id}
+                      data-message-id={message.id}
+                    >
+                      {message.replyTo !== undefined && (
+                        <div className="reply-reference">
+                          <strong>{message.replyTo.authorDisplayName}</strong>
+                          <span>{message.replyTo.content}</span>
+                        </div>
+                      )}
+                      <div className="message-meta">
+                        <strong>{message.authorDisplayName}</strong>
+                        <time dateTime={message.createdAt}>
+                          {new Date(message.createdAt).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      </div>
+                      <p>{message.content}</p>
+                      <button
+                        className="reply-button"
+                        type="button"
+                        aria-label={`Reply to ${message.authorDisplayName}`}
+                        onClick={() => setReplyingTo(message)}
+                      >
+                        Reply
+                      </button>
+                    </article>
+                  ))}
+                </div>
+                <div className="message-composer">
+                  {replyingTo !== null && (
+                    <div className="replying-to">
+                      <span>
+                        Replying to{" "}
+                        <strong>{replyingTo.authorDisplayName}</strong>
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Cancel reply"
+                        onClick={() => setReplyingTo(null)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )}
+                  <form
+                    className="composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (messageDraft.trim() !== "") void sendMessage();
+                    }}
+                  >
+                    <label className="sr-only" htmlFor="message-content">
+                      Message #{activeChannel.name}
+                    </label>
+                    <input
+                      id="message-content"
+                      value={messageDraft}
+                      maxLength={4000}
+                      placeholder={`Message #${activeChannel.name}`}
+                      onChange={(event) => setMessageDraft(event.target.value)}
+                    />
+                    <button type="submit" disabled={messageDraft.trim() === ""}>
+                      Send
+                    </button>
+                  </form>
+                </div>
+              </>
+            )}
+          </section>
+        </section>
         <label htmlFor="new-server-name">New Server name</label>
         <div className="composer">
           <input
