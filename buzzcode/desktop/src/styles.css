@@ -1088,6 +1088,56 @@ button:disabled {
   overflow-y: auto;
 }
 
+.dm-sidebar > nav button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.5rem;
+  align-items: center;
+  border-radius: 0.25rem;
+}
+
+.dm-sidebar > nav button:hover,
+.dm-sidebar > nav button[aria-current="true"] {
+  color: var(--text);
+  background: #404249;
+}
+
+.dm-peer-avatar {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+  text-transform: uppercase;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.dm-peer-identity {
+  display: grid;
+  min-width: 0;
+}
+
+.app-shell .dm-peer-identity strong,
+.app-shell .dm-peer-identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .dm-peer-identity strong {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.app-shell .dm-peer-identity small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .direct-messages .channel-panel {
   min-height: 0;
   background: var(--surface);

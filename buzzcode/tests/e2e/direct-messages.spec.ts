@@ -41,10 +41,22 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await expect(owner.getByTestId("active-dm-name")).toHaveText("member");
   await expect(owner.getByText("member@example.com")).toHaveCount(0);
   await expect(member.getByRole("button", { name: "owner" })).toBeVisible();
+  await expect(member.getByRole("img", { name: "owner avatar" })).toBeVisible();
   await member.getByRole("button", { name: "owner" }).click();
   await expect(member.getByTestId("dm-realtime-status")).toHaveText(
     "Connected",
   );
+
+  await owner.getByLabel("Find or start a Direct Message").fill("intruder");
+  await owner.getByRole("button", { name: "intruder @intruder" }).click();
+  await expect(owner.getByRole("button", { name: "member" })).toBeVisible();
+  await expect(owner.getByRole("button", { name: "intruder" })).toBeVisible();
+  await expect(owner.getByRole("img", { name: "member avatar" })).toBeVisible();
+  await expect(
+    owner.getByRole("img", { name: "intruder avatar" }),
+  ).toBeVisible();
+  await owner.getByRole("button", { name: "member" }).click();
+
   const directMessageId = await owner
     .getByRole("button", { name: "member" })
     .getAttribute("data-direct-message-id");
@@ -146,7 +158,12 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
       messageId: firstMessageId,
     },
   );
-  expect(denied.list).toEqual([]);
+  expect(denied.list).toEqual([
+    expect.objectContaining({ peerHandle: "owner" }),
+  ]);
+  expect(
+    (denied.list as { id: string }[]).map((directMessage) => directMessage.id),
+  ).not.toContain(directMessageId);
   expect(denied.pageStatus).toBe(404);
   expect(denied.messageStatus).toBe(404);
   expect(denied.searchStatus).toBe(404);

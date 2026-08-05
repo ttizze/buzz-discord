@@ -301,17 +301,37 @@ export function DirectMessagesPanel({
                 type="button"
                 data-direct-message-id={directMessage.id}
                 aria-current={active?.id === directMessage.id}
+                aria-label={
+                  directMessages.some(
+                    (candidate) =>
+                      candidate.id !== directMessage.id &&
+                      candidate.peerDisplayName ===
+                        directMessage.peerDisplayName,
+                  )
+                    ? `${directMessage.peerDisplayName} @${directMessage.peerHandle}`
+                    : directMessage.peerDisplayName
+                }
                 onClick={() => {
                   setActive(directMessage);
                   setNavigationOpen(false);
                 }}
               >
-                {directMessage.peerDisplayName}
-                {directMessages.some(
-                  (candidate) =>
-                    candidate.id !== directMessage.id &&
-                    candidate.peerDisplayName === directMessage.peerDisplayName,
-                ) && ` @${directMessage.peerHandle}`}
+                <span
+                  className="dm-peer-avatar"
+                  role="img"
+                  aria-label={`${directMessage.peerDisplayName} avatar`}
+                >
+                  {directMessage.peerDisplayName.slice(0, 1)}
+                </span>
+                <span className="dm-peer-identity">
+                  <strong>{directMessage.peerDisplayName}</strong>
+                  {directMessages.some(
+                    (candidate) =>
+                      candidate.id !== directMessage.id &&
+                      candidate.peerDisplayName ===
+                        directMessage.peerDisplayName,
+                  ) && <small> @{directMessage.peerHandle}</small>}
+                </span>
               </button>
             ))}
           </nav>
