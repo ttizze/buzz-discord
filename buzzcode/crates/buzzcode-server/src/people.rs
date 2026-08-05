@@ -23,6 +23,14 @@ struct PersonSummary {
     display_name: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSummary {
+    agent_id: String,
+    handle: String,
+    display_name: String,
+}
+
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/users/search", get(search_people))
@@ -30,6 +38,56 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/api/servers/{server_id}/channels/{channel_id}/mention-suggestions",
             get(search_mention_candidates),
         )
+        .route(
+            "/api/servers/{server_id}/channels/{channel_id}/agent-mention-suggestions",
+            get(search_agent_mention_candidates),
+        )
+}
+
+async fn search_agent_mention_candidates(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<PeopleQuery>,
+) -> Result<Json<Vec<AgentSummary>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    if !can_access_channel(&state.pool, &subject, &server_id, &channel_id).await? {
+        return Err(ApiError::NotFound);
+    }
+    let search = normalize_query(&query.q)?.to_ascii_lowercase();
+    let computer_id = sqlx::query_scalar::<_, String>(
+        "SELECT project.computer_id FROM channels channel \
+         JOIN server_projects project ON project.id = channel.project_id \
+         WHERE channel.id = $1 AND channel.server_id = $2",
+    )
+    .bind(&channel_id)
+    .bind(&server_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(computer_id) = computer_id else {
+        return Ok(Json(Vec::new()));
+    };
+    let presence = state.host_presence.read().await;
+    let agents = presence
+        .get(&computer_id)
+        .filter(|host| host.status == crate::hosts::HostStatus::Online)
+        .map(|host| {
+            host.agents
+                .iter()
+                .filter(|agent| {
+                    agent.id.to_ascii_lowercase().contains(&search)
+                        || agent.name.to_ascii_lowercase().contains(&search)
+                })
+                .map(|agent| AgentSummary {
+                    agent_id: agent.id.clone(),
+                    handle: agent.id.clone(),
+                    display_name: agent.name.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(agents))
 }
 
 fn normalize_query(value: &str) -> Result<&str, ApiError> {

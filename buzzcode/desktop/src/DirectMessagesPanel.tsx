@@ -90,7 +90,18 @@ export function DirectMessagesPanel({
         preferredId ??
         current?.id ??
         window.localStorage.getItem("buzzcode.active-direct-message");
-      return loaded.find((item) => item.id === wanted) ?? loaded[0] ?? null;
+      const next =
+        loaded.find((item) => item.id === wanted) ?? loaded[0] ?? null;
+      if (
+        current !== null &&
+        next !== null &&
+        current.id === next.id &&
+        current.peerHandle === next.peerHandle &&
+        current.peerDisplayName === next.peerDisplayName
+      ) {
+        return current;
+      }
+      return next;
     });
   }, []);
 

@@ -324,6 +324,16 @@ struct CreateMessage {
     reply_to_message_id: Option<String>,
     #[serde(default)]
     mentions: Vec<MentionInput>,
+    #[serde(default)]
+    agent_mentions: Vec<AgentMentionInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentMentionInput {
+    agent_id: String,
+    start: usize,
+    end: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -372,6 +382,9 @@ struct ChannelMessage {
     content: Option<String>,
     author_subject: String,
     author_display_name: String,
+    author_kind: String,
+    author_agent_id: Option<String>,
+    requested_by_subject: Option<String>,
     created_at: String,
     edited_at: Option<String>,
     deleted_at: Option<String>,
@@ -1772,7 +1785,7 @@ type MessageRow = (
     String,
     Option<String>,
     String,
-    String,
+    sqlx::types::Json<MessageAuthor>,
     String,
     Option<String>,
     Option<String>,
@@ -1784,6 +1797,15 @@ type MessageRow = (
     sqlx::types::Json<Vec<StoredMention>>,
     sqlx::types::Json<Vec<StoredMention>>,
 );
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageAuthor {
+    display_name: String,
+    kind: String,
+    agent_id: Option<String>,
+    requested_by_subject: Option<String>,
+}
 
 fn resolve_mentioned_content(
     content: Option<String>,
@@ -1853,7 +1875,10 @@ fn message_from_row(row: MessageRow) -> ChannelMessage {
         channel_id: row.2,
         content,
         author_subject: row.4,
-        author_display_name: row.5,
+        author_display_name: row.5.display_name.clone(),
+        author_kind: row.5.kind.clone(),
+        author_agent_id: row.5.agent_id.clone(),
+        requested_by_subject: row.5.requested_by_subject.clone(),
         created_at: row.6,
         edited_at: row.7,
         deleted_at: row.8,
@@ -1869,7 +1894,11 @@ fn message_from_row(row: MessageRow) -> ChannelMessage {
 }
 
 const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.channel_id, message.content, \
-     message.author_subject, author.display_name, \
+     message.author_subject, JSONB_BUILD_OBJECT( \
+         'displayName', CASE WHEN message.author_kind = 'agent' \
+             THEN INITCAP(message.author_agent_id) ELSE author.display_name END, \
+         'kind', message.author_kind, 'agentId', message.author_agent_id, \
+         'requestedBySubject', message.requested_by_subject), \
      TO_CHAR(message.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
      TO_CHAR(message.edited_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
      TO_CHAR(message.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
@@ -2067,6 +2096,10 @@ async fn create_message(
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
     let (requested_content, mentions) = prepare_mentioned_content(&input.content, input.mentions)?;
+    if input.agent_mentions.len() > 1 || (!input.agent_mentions.is_empty() && !mentions.is_empty())
+    {
+        return Err(ApiError::InvalidRequest);
+    }
     let mut transaction = state.pool.begin().await?;
     lock_channel_and_require_access(
         &mut transaction,
@@ -2090,8 +2123,55 @@ async fn create_message(
     }
     let display_names =
         require_mentions_accessible(&mut transaction, &server_id, &channel_id, &mentions).await?;
-    let (stored_content, mentions) =
+    let (mut stored_content, mentions) =
         canonicalize_mentioned_content(&requested_content, &mentions, &display_names)?;
+    let agent_invocation = if let Some(agent_mention) = input.agent_mentions.first() {
+        let target = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT project.id, project.computer_id, project.folder_path \
+             FROM channels channel JOIN server_projects project ON project.id = channel.project_id \
+             WHERE channel.id = $1 AND channel.server_id = $2",
+        )
+        .bind(&channel_id)
+        .bind(&server_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(ApiError::InvalidRequest)?;
+        let host = state
+            .host_presence
+            .read()
+            .await
+            .get(&target.1)
+            .filter(|host| host.status == hosts::HostStatus::Online)
+            .cloned()
+            .ok_or(ApiError::Conflict)?;
+        let agent = host
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_mention.agent_id)
+            .cloned()
+            .ok_or(ApiError::InvalidRequest)?;
+        let characters = requested_content.chars().collect::<Vec<_>>();
+        if agent_mention.start >= agent_mention.end || agent_mention.end > characters.len() {
+            return Err(ApiError::InvalidRequest);
+        }
+        let mut canonical = characters[..agent_mention.start].iter().collect::<String>();
+        canonical.push('@');
+        canonical.push_str(&agent.name);
+        canonical.extend(characters[agent_mention.end..].iter());
+        let prompt = characters[..agent_mention.start]
+            .iter()
+            .chain(characters[agent_mention.end..].iter())
+            .collect::<String>()
+            .trim()
+            .to_owned();
+        if prompt.is_empty() {
+            return Err(ApiError::InvalidRequest);
+        }
+        stored_content = canonical;
+        Some((target.0, target.1, target.2, agent.id, prompt))
+    } else {
+        None
+    };
     let id = CsrfToken::new_random().secret().to_owned();
     sqlx::query(
         "INSERT INTO channel_messages \
@@ -2107,13 +2187,126 @@ async fn create_message(
     .execute(&mut *transaction)
     .await?;
     replace_message_mentions(&mut transaction, &id, &mentions).await?;
+    let run_id = if let Some((project_id, computer_id, _, agent_id, _)) = &agent_invocation {
+        let run_id = CsrfToken::new_random().secret().to_owned();
+        sqlx::query(
+            "INSERT INTO agent_runs \
+             (id, server_id, project_id, channel_id, computer_id, agent_id, \
+              requested_by_subject, request_message_id, status) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running')",
+        )
+        .bind(&run_id)
+        .bind(&server_id)
+        .bind(project_id)
+        .bind(&channel_id)
+        .bind(computer_id)
+        .bind(agent_id)
+        .bind(&subject)
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+        Some(run_id)
+    } else {
+        None
+    };
     transaction.commit().await?;
     let message = load_message(&state.pool, &subject, &channel_id, &id).await?;
     let _ = state.changes.send(ServerEvent::MessageCreated {
-        server_id,
+        server_id: server_id.clone(),
         message: Box::new(message.clone()),
     });
+    if let (Some(run_id), Some((_, computer_id, folder_path, agent_id, prompt))) =
+        (run_id, agent_invocation)
+    {
+        let state = Arc::clone(&state);
+        let requester = subject;
+        tokio::spawn(async move {
+            finish_agent_run(
+                state,
+                run_id,
+                server_id,
+                channel_id,
+                computer_id,
+                folder_path,
+                agent_id,
+                requester,
+                prompt,
+            )
+            .await;
+        });
+    }
     Ok((StatusCode::CREATED, Json(message)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_agent_run(
+    state: Arc<AppState>,
+    run_id: String,
+    server_id: String,
+    channel_id: String,
+    computer_id: String,
+    folder_path: String,
+    agent_id: String,
+    requester: String,
+    prompt: String,
+) {
+    let result =
+        hosts::run_acp_prompt(&state, &computer_id, &folder_path, &agent_id, &prompt).await;
+    let (status, content, error) = match result {
+        Ok(content) => ("completed", content, None),
+        Err(error) => ("failed", format!("Agent Run failed: {error}"), Some(error)),
+    };
+    let message_id = CsrfToken::new_random().secret().to_owned();
+    let mut transaction = match state.pool.begin().await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            tracing::error!(?error, %run_id, "failed to persist Agent Run");
+            return;
+        }
+    };
+    let inserted = sqlx::query(
+        "INSERT INTO channel_messages \
+         (id, server_id, channel_id, author_subject, content, author_kind, \
+          author_agent_id, requested_by_subject) \
+         VALUES ($1, $2, $3, $4, $5, 'agent', $6, $4)",
+    )
+    .bind(&message_id)
+    .bind(&server_id)
+    .bind(&channel_id)
+    .bind(&requester)
+    .bind(content)
+    .bind(&agent_id)
+    .execute(&mut *transaction)
+    .await;
+    if let Err(error) = inserted {
+        tracing::error!(?error, %run_id, "failed to persist Agent message");
+        return;
+    }
+    if let Err(error) = sqlx::query(
+        "UPDATE agent_runs SET status = $2, error = $3, completed_at = NOW() WHERE id = $1",
+    )
+    .bind(&run_id)
+    .bind(status)
+    .bind(error)
+    .execute(&mut *transaction)
+    .await
+    {
+        tracing::error!(?error, %run_id, "failed to finish Agent Run");
+        return;
+    }
+    if let Err(error) = transaction.commit().await {
+        tracing::error!(?error, %run_id, "failed to commit Agent Run");
+        return;
+    }
+    match load_message(&state.pool, &requester, &channel_id, &message_id).await {
+        Ok(message) => {
+            let _ = state.changes.send(ServerEvent::MessageCreated {
+                server_id,
+                message: Box::new(message),
+            });
+        }
+        Err(error) => tracing::error!(?error, %run_id, "failed to publish Agent message"),
+    }
 }
 
 async fn get_message(

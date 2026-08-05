@@ -1,10 +1,23 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { type ChildProcess, spawn } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
 
 const harness = new E2eHarness();
+const hostBinary = resolve(
+  import.meta.dirname,
+  "../../target/debug/buzzcode-host",
+);
+
+async function stopHost(host: ChildProcess | undefined): Promise<void> {
+  if (host === undefined || host.exitCode !== null || host.signalCode !== null)
+    return;
+  const exited = new Promise<void>((done) => host.once("exit", () => done()));
+  host.kill("SIGTERM");
+  await exited;
+}
 
 async function signIn(page: Page, user: string): Promise<void> {
   await fetch(`${harness.identityProviderOrigin}/test/next-token?user=${user}`);
@@ -27,7 +40,10 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
 }) => {
   const directory = await mkdtemp(join(tmpdir(), "buzzcode-project-e2e-"));
   const folderPath = join(directory, "ordinary-folder");
+  const statePath = join(directory, "desktop-host.json");
+  let host: ChildProcess | undefined;
   await mkdir(folderPath);
+  const canonicalFolderPath = await realpath(folderPath);
   await page.addInitScript(
     ({ selectedFolder }) => {
       (
@@ -57,6 +73,48 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       .getByRole("button", { name: "Project Server" })
       .getAttribute("data-server-id");
     expect(serverId).toBeTruthy();
+
+    const registration = await page.evaluate(async (origin) => {
+      const response = await fetch(`${origin}/api/computers/register`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          installationId: "owner-mac-installation",
+          name: "Owner Mac",
+        }),
+      });
+      return response.json();
+    }, harness.apiOrigin);
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        computerId: registration.id,
+        apiOrigin: harness.apiOrigin,
+        credential: registration.credential,
+        installationId: "owner-mac-installation",
+        name: "Owner Mac",
+      }),
+    );
+    host = spawn(hostBinary, ["run", "--state", statePath], {
+      stdio: "ignore",
+    });
+    await expect
+      .poll(async () => {
+        const computers = await page.evaluate(
+          async (origin) =>
+            (
+              await fetch(`${origin}/api/computers`, {
+                credentials: "include",
+              })
+            ).json(),
+          harness.apiOrigin,
+        );
+        return computers.find(
+          (computer: { id: string }) => computer.id === registration.id,
+        )?.status;
+      })
+      .toBe("online");
 
     await expect(
       page.getByRole("button", { name: "Add Project" }),
@@ -97,7 +155,7 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
           computerId: expect.any(String),
           computerName: "Owner Mac",
           computerStatus: "online",
-          folderPath,
+          folderPath: canonicalFolderPath,
           visibility: "open",
           channels: [],
         }),
@@ -142,7 +200,7 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       status: 201,
       body: expect.objectContaining({
         computerId: firstProject.computerId,
-        folderPath,
+        folderPath: canonicalFolderPath,
       }),
     });
 
@@ -268,6 +326,8 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       await memberContext.close();
     }
 
+    await stopHost(host);
+    host = undefined;
     await page.waitForTimeout(1_100);
     const offlineProject = await page.evaluate(
       async ({ channelId, origin, serverId }) => {
@@ -305,7 +365,11 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
         channels: [expect.objectContaining({ name: "implementation" })],
       }),
     ]);
+    await expect(
+      page.getByRole("button", { name: "Add Project" }),
+    ).toBeDisabled();
   } finally {
+    await stopHost(host);
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -1,9 +1,12 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  type AgentMentionInput,
+  type AgentSearchResult,
   type AuditEntry,
   type AuthSession,
   acceptInvitation,
+  buzzcodeApiOrigin,
   type Channel,
   type ChannelMessage,
   type Computer,
@@ -36,6 +39,7 @@ import {
   type Server,
   type ServerMember,
   type ServerProject,
+  searchAgentMentionCandidates,
   searchMentionCandidates,
   setMessageReaction,
   startDesktopLogin,
@@ -46,7 +50,11 @@ import {
   updateMemberRole,
   writeDurableState,
 } from "./api";
-import { chooseProjectFolder, currentComputerIdentity } from "./computer";
+import {
+  chooseProjectFolder,
+  currentComputerIdentity,
+  startComputerHost,
+} from "./computer";
 import { DirectMessagesPanel } from "./DirectMessagesPanel";
 import "./styles.css";
 import { useModalDialog } from "./useModalDialog";
@@ -101,7 +109,14 @@ function MemberIdentity({ member }: { member: ServerMember }) {
   );
 }
 
-type DraftMention = UserSearchResult & Readonly<{ start: number; end: number }>;
+type DraftUserMention = UserSearchResult &
+  Readonly<{ kind: "user"; start: number; end: number }>;
+type DraftAgentMention = AgentSearchResult &
+  Readonly<{ kind: "agent"; start: number; end: number }>;
+type DraftMention = DraftUserMention | DraftAgentMention;
+type MentionCandidate =
+  | (UserSearchResult & Readonly<{ kind: "user" }>)
+  | (AgentSearchResult & Readonly<{ kind: "agent" }>);
 
 function reconcileDraftMentions(
   previous: string,
@@ -138,11 +153,36 @@ function apiMentions(
 ): readonly MentionInput[] {
   const codePointIndex = (codeUnitIndex: number) =>
     Array.from(content.slice(0, codeUnitIndex)).length;
-  return mentions.map((mention) => ({
-    userId: mention.userId,
-    start: codePointIndex(mention.start),
-    end: codePointIndex(mention.end),
-  }));
+  return mentions.flatMap((mention) =>
+    mention.kind === "user"
+      ? [
+          {
+            userId: mention.userId,
+            start: codePointIndex(mention.start),
+            end: codePointIndex(mention.end),
+          },
+        ]
+      : [],
+  );
+}
+
+function apiAgentMentions(
+  content: string,
+  mentions: readonly DraftMention[],
+): readonly AgentMentionInput[] {
+  const codePointIndex = (codeUnitIndex: number) =>
+    Array.from(content.slice(0, codeUnitIndex)).length;
+  return mentions.flatMap((mention) =>
+    mention.kind === "agent"
+      ? [
+          {
+            agentId: mention.agentId,
+            start: codePointIndex(mention.start),
+            end: codePointIndex(mention.end),
+          },
+        ]
+      : [],
+  );
 }
 
 function editableMentions(
@@ -154,6 +194,7 @@ function editableMentions(
     characters.slice(0, codePointIndex).join("").length;
   return mentions.map((mention) => ({
     ...mention,
+    kind: "user" as const,
     start: codeUnitIndex(mention.start),
     end: codeUnitIndex(mention.end),
   }));
@@ -207,7 +248,7 @@ function AuthenticatedApp({
     [],
   );
   const [mentionCandidates, setMentionCandidates] = useState<
-    readonly UserSearchResult[]
+    readonly MentionCandidate[]
   >([]);
   const [replyingTo, setReplyingTo] = useState<ChannelMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -225,7 +266,9 @@ function AuthenticatedApp({
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
   const computerRequestVersion = useRef(0);
+  const localComputerId = useRef<string | null>(null);
   const messageChannelId = useRef<string | null>(null);
+  const messageInputRef = useRef<HTMLInputElement | null>(null);
   const navigationToggle = useRef<HTMLButtonElement | null>(null);
   const navigationDrawer = useRef<HTMLElement | null>(null);
   const memberToggle = useRef<HTMLButtonElement | null>(null);
@@ -338,31 +381,49 @@ function AuthenticatedApp({
     const loaded = await listComputers();
     if (requestVersion === computerRequestVersion.current) {
       setComputers(loaded);
+      if (localComputerId.current !== null) {
+        setCurrentComputer(
+          loaded.find(
+            (computer) =>
+              computer.id === localComputerId.current &&
+              computer.status === "online",
+          ) ?? null,
+        );
+      }
     }
   }, []);
 
   useEffect(() => {
     let current = true;
-    let heartbeat: number | undefined;
-    void currentComputerIdentity().then(async (identity) => {
-      const touch = async () => {
-        const computer = await registerComputer(
-          identity.installationId,
-          identity.name,
-        );
-        if (!current) return;
-        setCurrentComputer(computer);
-        void reloadComputers();
-      };
-      await touch().catch(() => setCurrentComputer(null));
-      heartbeat = window.setInterval(
-        () => void touch().catch(() => setCurrentComputer(null)),
-        30_000,
+    void (async () => {
+      const identity = await currentComputerIdentity();
+      const registration = await registerComputer(
+        identity.installationId,
+        identity.name,
       );
-    });
+      localComputerId.current = registration.id;
+      await startComputerHost(
+        buzzcodeApiOrigin(),
+        registration.id,
+        registration.credential,
+      );
+      for (let attempt = 0; current && attempt < 40; attempt += 1) {
+        const loaded = await listComputers();
+        const computer = loaded.find((item) => item.id === registration.id);
+        if (computer?.status === "online") {
+          setCurrentComputer(computer);
+          setComputers(loaded);
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
+      if (current) {
+        setCurrentComputer(null);
+        void reloadComputers();
+      }
+    })();
     return () => {
       current = false;
-      if (heartbeat !== undefined) window.clearInterval(heartbeat);
     };
   }, [reloadComputers]);
 
@@ -501,6 +562,7 @@ function AuthenticatedApp({
           void reloadManagement(activeServer.id);
         } else if (event.type === "projectsChanged") {
           void reloadChannels(activeServer.id);
+          void reloadComputers();
         } else if (event.type === "channelCreated") {
           setChannels((existing) => {
             if (existing?.some((channel) => channel.id === event.channel.id)) {
@@ -546,6 +608,7 @@ function AuthenticatedApp({
     activeServer,
     mergeMessages,
     reloadChannels,
+    reloadComputers,
     reloadManagement,
     reloadMessages,
     reloadServers,
@@ -578,9 +641,16 @@ function AuthenticatedApp({
     }
     let current = true;
     const timeout = window.setTimeout(() => {
-      void searchMentionCandidates(activeServer.id, activeChannel.id, query)
-        .then((candidates) => {
-          if (current) setMentionCandidates(candidates);
+      void Promise.all([
+        searchAgentMentionCandidates(activeServer.id, activeChannel.id, query),
+        searchMentionCandidates(activeServer.id, activeChannel.id, query),
+      ])
+        .then(([agents, people]) => {
+          if (current)
+            setMentionCandidates([
+              ...agents.map((agent) => ({ ...agent, kind: "agent" as const })),
+              ...people.map((person) => ({ ...person, kind: "user" as const })),
+            ]);
         })
         .catch(() => {
           if (current) setMentionCandidates([]);
@@ -592,7 +662,7 @@ function AuthenticatedApp({
     };
   }, [activeChannel, activeServer, draftMentions, messageDraft]);
 
-  function selectMention(person: UserSearchResult) {
+  function selectMention(person: MentionCandidate) {
     const match = messageDraft.match(/(?:^|\s)@([^@\n]*)$/);
     if (match?.index === undefined) return;
     const start = match.index + match[0].lastIndexOf("@");
@@ -609,6 +679,13 @@ function AuthenticatedApp({
     ]);
     setMessageDraft(nextDraft);
     setMentionCandidates([]);
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus();
+      messageInputRef.current?.setSelectionRange(
+        nextDraft.length,
+        nextDraft.length,
+      );
+    });
   }
 
   function selectServer(server: Server) {
@@ -734,6 +811,7 @@ function AuthenticatedApp({
       messageDraft,
       replyingTo?.id,
       apiMentions(messageDraft, draftMentions),
+      apiAgentMentions(messageDraft, draftMentions),
     );
     setMessages((current) => mergeMessages(current, [message]));
     setMessageDraft("");
@@ -1020,6 +1098,7 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Add Project"
+                  disabled={currentComputer === null}
                   onClick={(event) => {
                     setProjectName("");
                     setProjectFolderPath("");
@@ -1207,6 +1286,7 @@ function AuthenticatedApp({
                       className="message"
                       key={message.id}
                       data-message-id={message.id}
+                      data-message-author-kind={message.authorKind}
                     >
                       {message.replyTo !== undefined && (
                         <div className="reply-reference">
@@ -1318,25 +1398,28 @@ function AuthenticatedApp({
                             >
                               Reply
                             </button>
-                            {message.authorSubject === session.user.subject && (
-                              <button
-                                type="button"
-                                aria-label={`Edit message by ${message.authorDisplayName}`}
-                                onClick={() => {
-                                  setEditingMessageId(message.id);
-                                  setEditDraft(message.content ?? "");
-                                  setEditMentions(
-                                    editableMentions(
-                                      message.content ?? "",
-                                      message.mentions,
-                                    ),
-                                  );
-                                }}
-                              >
-                                Edit
-                              </button>
-                            )}
-                            {(message.authorSubject === session.user.subject ||
+                            {message.authorKind === "user" &&
+                              message.authorSubject ===
+                                session.user.subject && (
+                                <button
+                                  type="button"
+                                  aria-label={`Edit message by ${message.authorDisplayName}`}
+                                  onClick={() => {
+                                    setEditingMessageId(message.id);
+                                    setEditDraft(message.content ?? "");
+                                    setEditMentions(
+                                      editableMentions(
+                                        message.content ?? "",
+                                        message.mentions,
+                                      ),
+                                    );
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                              )}
+                            {((message.authorKind === "user" &&
+                              message.authorSubject === session.user.subject) ||
                               activeServer.role === "owner" ||
                               activeServer.role === "admin") && (
                               <button
@@ -1380,6 +1463,7 @@ function AuthenticatedApp({
                       Message #{activeChannel.name}
                     </label>
                     <input
+                      ref={messageInputRef}
                       id="message-content"
                       value={messageDraft}
                       maxLength={4000}
@@ -1403,7 +1487,11 @@ function AuthenticatedApp({
                       <div className="mention-picker-results">
                         {mentionCandidates.map((candidate) => (
                           <button
-                            key={candidate.userId}
+                            key={
+                              candidate.kind === "agent"
+                                ? `agent-${candidate.agentId}`
+                                : `user-${candidate.userId}`
+                            }
                             type="button"
                             onClick={() => selectMention(candidate)}
                           >

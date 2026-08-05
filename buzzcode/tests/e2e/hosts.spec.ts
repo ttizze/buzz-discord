@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -85,6 +85,10 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
   expect(replayStatus).toBe(404);
 
   const directory = await mkdtemp(join(tmpdir(), "buzzcode-host-e2e-"));
+  const firstFolder = join(directory, "first-vps-project");
+  const secondFolder = join(directory, "second-vps-project");
+  await mkdir(firstFolder);
+  await mkdir(secondFolder);
   const statePath = join(directory, "host.json");
   await writeFile(
     statePath,
@@ -126,7 +130,7 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
     ).toContainText("Shared VPSOnline");
 
     const crossServerProjects = await page.evaluate(
-      async ({ computerId, origin }) => {
+      async ({ computerId, folderPaths, origin }) => {
         const createServer = async (name: string) => {
           const response = await fetch(`${origin}/api/servers`, {
             method: "POST",
@@ -138,7 +142,11 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
         };
         const first = await createServer("VPS Project Server One");
         const second = await createServer("VPS Project Server Two");
-        const createProject = async (serverId: string, name: string) =>
+        const createProject = async (
+          serverId: string,
+          name: string,
+          folderPath: string,
+        ) =>
           fetch(`${origin}/api/servers/${serverId}/projects`, {
             method: "POST",
             credentials: "include",
@@ -146,16 +154,19 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
             body: JSON.stringify({
               name,
               computerId,
-              folderPath: `/srv/${name.toLowerCase().replaceAll(" ", "-")}`,
+              folderPath,
             }),
           });
         return [
-          (await createProject(first.id, "First VPS Project")).status,
-          (await createProject(second.id, "Second VPS Project")).status,
+          (await createProject(first.id, "First VPS Project", folderPaths[0]))
+            .status,
+          (await createProject(second.id, "Second VPS Project", folderPaths[1]))
+            .status,
         ];
       },
       {
         computerId: pairing.paired.computerId,
+        folderPaths: [firstFolder, secondFolder],
         origin: harness.apiOrigin,
       },
     );

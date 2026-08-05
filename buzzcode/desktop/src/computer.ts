@@ -36,3 +36,12 @@ export async function chooseProjectFolder(): Promise<string | null> {
   }
   return invoke<string | null>("select_project_folder");
 }
+
+export async function startComputerHost(
+  apiOrigin: string,
+  computerId: string,
+  credential: string,
+): Promise<void> {
+  if (import.meta.env.MODE === "e2e") return;
+  await invoke("start_computer_host", { apiOrigin, computerId, credential });
+}

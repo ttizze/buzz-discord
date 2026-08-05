@@ -10,10 +10,13 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use openidconnect::CsrfToken;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::{
+    sync::{broadcast, mpsc},
+    time::{Duration, timeout},
+};
 
 use crate::{ApiError, AppState, ServerEvent, require_origin, require_session, token_hash};
 
@@ -27,12 +30,61 @@ pub(crate) enum HostStatus {
 pub(crate) struct HostPresence {
     pub(crate) status: HostStatus,
     connection_id: String,
+    commands: mpsc::UnboundedSender<ServerHostMessage>,
+    inbound: broadcast::Sender<ClientHostMessage>,
+    pub(crate) agents: Vec<AgentDescriptor>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentDescriptor {
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-enum HostMessage {
-    Ready,
+enum ClientHostMessage {
+    Ready {
+        agents: Vec<AgentDescriptor>,
+    },
+    FolderBound {
+        request_id: String,
+        path: String,
+    },
+    AgentOpened {
+        run_id: String,
+    },
+    Acp {
+        run_id: String,
+        message: serde_json::Value,
+    },
+    Error {
+        request_id: Option<String>,
+        run_id: Option<String>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum ServerHostMessage {
+    BindFolder {
+        request_id: String,
+        path: String,
+    },
+    OpenAgent {
+        run_id: String,
+        agent_id: String,
+        cwd: String,
+    },
+    Acp {
+        run_id: String,
+        message: serde_json::Value,
+    },
+    CloseAgent {
+        run_id: String,
+    },
 }
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -79,6 +131,14 @@ struct PairedHost {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RegisteredComputer {
+    #[serde(flatten)]
+    computer: ComputerSummary,
+    credential: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ComputerSummary {
     pub(crate) id: String,
     name: String,
@@ -98,7 +158,7 @@ async fn register_computer(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(input): Json<RegisterComputer>,
-) -> Result<(StatusCode, Json<ComputerSummary>), ApiError> {
+) -> Result<(StatusCode, Json<RegisteredComputer>), ApiError> {
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     let installation_id = input.installation_id.trim();
@@ -107,11 +167,12 @@ async fn register_computer(
         return Err(ApiError::InvalidRequest);
     }
     let id = format!("computer-{}", CsrfToken::new_random().secret());
+    let credential = CsrfToken::new_random().secret().to_owned();
     let row = sqlx::query_as::<_, (String, String, String, Option<String>)>(
-        "INSERT INTO computers (id, owner_subject, installation_id, name, last_seen_at) \
-         VALUES ($1, $2, $3, $4, NOW()) \
+        "INSERT INTO computers (id, owner_subject, installation_id, name, credential_hash, last_seen_at) \
+         VALUES ($1, $2, $3, $4, $5, NOW()) \
          ON CONFLICT (installation_id) DO UPDATE \
-         SET name = EXCLUDED.name, last_seen_at = NOW() \
+         SET name = EXCLUDED.name, credential_hash = EXCLUDED.credential_hash, last_seen_at = NOW() \
          WHERE computers.owner_subject = EXCLUDED.owner_subject \
                AND computers.revoked_at IS NULL \
          RETURNING id, created_at::TEXT, name, last_seen_at::TEXT",
@@ -120,17 +181,21 @@ async fn register_computer(
     .bind(subject)
     .bind(installation_id)
     .bind(name)
+    .bind(token_hash(&credential))
     .fetch_optional(&state.pool)
     .await?
     .ok_or(ApiError::Conflict)?;
     Ok((
         StatusCode::OK,
-        Json(ComputerSummary {
-            id: row.0,
-            created_at: row.1,
-            name: row.2,
-            last_seen_at: row.3,
-            status: "online".to_owned(),
+        Json(RegisteredComputer {
+            computer: ComputerSummary {
+                id: row.0,
+                created_at: row.1,
+                name: row.2,
+                last_seen_at: row.3,
+                status: "reconnecting".to_owned(),
+            },
+            credential,
         }),
     ))
 }
@@ -274,18 +339,20 @@ async fn connect_host(
     let connection_id = CsrfToken::new_random().secret().to_owned();
     Ok(websocket.on_upgrade(move |mut socket| async move {
         let mut revocations = state.host_revocations.subscribe();
-        loop {
+        let agents = loop {
             tokio::select! {
                 message = socket.next() => match message {
                     Some(Ok(Message::Text(payload))) => {
-                        if !matches!(serde_json::from_str::<HostMessage>(&payload), Ok(HostMessage::Ready)) {
-                            let _ = socket.send(Message::Close(Some(CloseFrame {
-                                code: 1008,
-                                reason: "invalid Host ready message".into(),
-                            }))).await;
-                            return;
+                        match serde_json::from_str::<ClientHostMessage>(&payload) {
+                            Ok(ClientHostMessage::Ready { agents }) if !agents.is_empty() => break agents,
+                            _ => {
+                                let _ = socket.send(Message::Close(Some(CloseFrame {
+                                    code: 1008,
+                                    reason: "invalid Host ready message".into(),
+                                }))).await;
+                                return;
+                            }
                         }
-                        break;
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                     Some(Ok(_)) => {}
@@ -296,24 +363,48 @@ async fn connect_host(
                     Err(broadcast::error::RecvError::Closed) => return,
                 }
             }
-        }
+        };
+        let (commands, mut command_rx) = mpsc::unbounded_channel();
+        let (inbound, _) = broadcast::channel(128);
         state.host_presence.write().await.insert(
             computer_id.clone(),
             HostPresence {
                 status: HostStatus::Online,
                 connection_id: connection_id.clone(),
+                commands,
+                inbound: inbound.clone(),
+                agents,
             },
         );
         notify_project_servers(&state, &computer_id).await;
+        let (mut socket_tx, mut socket_rx) = socket.split();
         let revoked = loop {
             tokio::select! {
-                message = socket.next() => match message {
+                message = socket_rx.next() => match message {
+                    Some(Ok(Message::Text(payload))) => {
+                        match serde_json::from_str::<ClientHostMessage>(&payload) {
+                            Ok(message) => {
+                                tracing::debug!(?message, %computer_id, "received Host message");
+                                let _ = inbound.send(message);
+                            }
+                            Err(error) => tracing::warn!(?error, %payload, "invalid Host message"),
+                        }
+                    }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break false,
                     Some(Ok(_)) => {}
                 },
+                command = command_rx.recv() => match command {
+                    Some(command) => {
+                        let Ok(payload) = serde_json::to_string(&command) else { break false };
+                        if socket_tx.send(Message::Text(payload.into())).await.is_err() {
+                            break false;
+                        }
+                    }
+                    None => break false,
+                },
                 revocation = revocations.recv() => match revocation {
                     Ok(revoked_id) if revoked_id == computer_id => {
-                        let _ = socket.send(Message::Close(Some(CloseFrame {
+                        let _ = socket_tx.send(Message::Close(Some(CloseFrame {
                             code: 1008,
                             reason: "revoked".into(),
                         }))).await;
@@ -340,6 +431,9 @@ async fn connect_host(
             HostPresence {
                 status: HostStatus::Reconnecting,
                 connection_id: connection_id.clone(),
+                commands: mpsc::unbounded_channel().0,
+                inbound: broadcast::channel(1).0,
+                agents: Vec::new(),
             },
         );
         drop(presence);
@@ -360,6 +454,211 @@ async fn connect_host(
             }
         });
     }))
+}
+
+async fn connected_host(state: &AppState, computer_id: &str) -> Result<HostPresence, ApiError> {
+    state
+        .host_presence
+        .read()
+        .await
+        .get(computer_id)
+        .filter(|host| host.status == HostStatus::Online)
+        .cloned()
+        .ok_or(ApiError::Conflict)
+}
+
+pub(crate) async fn bind_project_folder(
+    state: &AppState,
+    computer_id: &str,
+    path: &str,
+) -> Result<String, ApiError> {
+    let host = connected_host(state, computer_id).await?;
+    let request_id = CsrfToken::new_random().secret().to_owned();
+    let mut inbound = host.inbound.subscribe();
+    host.commands
+        .send(ServerHostMessage::BindFolder {
+            request_id: request_id.clone(),
+            path: path.to_owned(),
+        })
+        .map_err(|_| ApiError::Conflict)?;
+    timeout(Duration::from_secs(10), async move {
+        loop {
+            match inbound.recv().await {
+                Ok(ClientHostMessage::FolderBound {
+                    request_id: response_id,
+                    path,
+                }) if response_id == request_id => return Ok(path),
+                Ok(ClientHostMessage::Error {
+                    request_id: Some(response_id),
+                    ..
+                }) if response_id == request_id => return Err(ApiError::InvalidRequest),
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return Err(ApiError::Conflict),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ApiError::Conflict)?
+}
+
+async fn wait_for_run_message(
+    inbound: &mut broadcast::Receiver<ClientHostMessage>,
+    run_id: &str,
+    predicate: impl Fn(&ClientHostMessage) -> bool,
+) -> Result<ClientHostMessage, String> {
+    timeout(Duration::from_secs(120), async {
+        loop {
+            match inbound.recv().await {
+                Ok(message) => match &message {
+                    ClientHostMessage::Error {
+                        run_id: Some(error_run_id),
+                        message,
+                        ..
+                    } if error_run_id == run_id => return Err(message.clone()),
+                    _ if predicate(&message) => return Ok(message),
+                    _ => {}
+                },
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err("Computer disconnected".to_owned());
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Agent timed out".to_owned())?
+}
+
+fn acp_request(id: i64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    })
+}
+
+pub(crate) async fn run_acp_prompt(
+    state: &AppState,
+    computer_id: &str,
+    folder_path: &str,
+    agent_id: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let host = connected_host(state, computer_id)
+        .await
+        .map_err(|_| "Computer is offline".to_owned())?;
+    if !host.agents.iter().any(|agent| agent.id == agent_id) {
+        return Err("Agent is not available on this Computer".to_owned());
+    }
+    let run_id = CsrfToken::new_random().secret().to_owned();
+    let mut inbound = host.inbound.subscribe();
+    host.commands
+        .send(ServerHostMessage::OpenAgent {
+            run_id: run_id.clone(),
+            agent_id: agent_id.to_owned(),
+            cwd: folder_path.to_owned(),
+        })
+        .map_err(|_| "Computer disconnected".to_owned())?;
+    let result = async {
+        wait_for_run_message(&mut inbound, &run_id, |message| {
+            matches!(message, ClientHostMessage::AgentOpened { run_id: id } if id == &run_id)
+        })
+        .await?;
+        host.commands
+            .send(ServerHostMessage::Acp {
+                run_id: run_id.clone(),
+                message: acp_request(
+                    1,
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": 1,
+                        "clientCapabilities": {},
+                        "clientInfo": {"name": "buzzcode", "title": "Buzzcode", "version": env!("CARGO_PKG_VERSION")}
+                    }),
+                ),
+            })
+            .map_err(|_| "Computer disconnected".to_owned())?;
+        let initialized = wait_for_run_message(&mut inbound, &run_id, |message| {
+            matches!(message, ClientHostMessage::Acp { run_id: id, message } if id == &run_id && message.get("id") == Some(&serde_json::json!(1)))
+        })
+        .await?;
+        let ClientHostMessage::Acp { message, .. } = initialized else {
+            return Err("Agent initialization failed".to_owned());
+        };
+        if message.pointer("/result/protocolVersion") != Some(&serde_json::json!(1)) {
+            return Err("Agent does not support ACP v1".to_owned());
+        }
+        host.commands
+            .send(ServerHostMessage::Acp {
+                run_id: run_id.clone(),
+                message: acp_request(
+                    2,
+                    "session/new",
+                    serde_json::json!({"cwd": folder_path, "mcpServers": []}),
+                ),
+            })
+            .map_err(|_| "Computer disconnected".to_owned())?;
+        let session = wait_for_run_message(&mut inbound, &run_id, |message| {
+            matches!(message, ClientHostMessage::Acp { run_id: id, message } if id == &run_id && message.get("id") == Some(&serde_json::json!(2)))
+        })
+        .await?;
+        let ClientHostMessage::Acp { message, .. } = session else {
+            return Err("Agent session creation failed".to_owned());
+        };
+        let session_id = message
+            .pointer("/result/sessionId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Agent session creation failed".to_owned())?;
+        host.commands
+            .send(ServerHostMessage::Acp {
+                run_id: run_id.clone(),
+                message: acp_request(
+                    3,
+                    "session/prompt",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "prompt": [{"type": "text", "text": prompt}]
+                    }),
+                ),
+            })
+            .map_err(|_| "Computer disconnected".to_owned())?;
+        let mut output = String::new();
+        loop {
+            let message = wait_for_run_message(&mut inbound, &run_id, |message| {
+                matches!(message, ClientHostMessage::Acp { run_id: id, .. } if id == &run_id)
+            })
+            .await?;
+            let ClientHostMessage::Acp { message, .. } = message else {
+                continue;
+            };
+            if message.get("id") == Some(&serde_json::json!(3)) {
+                if message.get("error").is_some() {
+                    return Err("Agent prompt failed".to_owned());
+                }
+                break;
+            }
+            if message.get("method") == Some(&serde_json::json!("session/update"))
+                && message.pointer("/params/update/sessionUpdate")
+                    == Some(&serde_json::json!("agent_message_chunk"))
+                && message.pointer("/params/update/content/type")
+                    == Some(&serde_json::json!("text"))
+                && let Some(text) = message
+                    .pointer("/params/update/content/text")
+                    .and_then(serde_json::Value::as_str)
+            {
+                output.push_str(text);
+            }
+        }
+        if output.trim().is_empty() {
+            Err("Agent returned no message".to_owned())
+        } else {
+            Ok(output)
+        }
+    }
+    .await;
+    let _ = host.commands.send(ServerHostMessage::CloseAgent { run_id });
+    result
 }
 
 async fn notify_project_servers(state: &AppState, computer_id: &str) {

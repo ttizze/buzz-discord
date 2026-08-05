@@ -65,6 +65,10 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
     .getByRole("button", { name: "member" })
     .getAttribute("data-direct-message-id");
   expect(directMessageId).toBeTruthy();
+  await expect(member.getByRole("button", { name: "owner" })).toHaveAttribute(
+    "data-direct-message-id",
+    directMessageId ?? "",
+  );
 
   await owner.getByLabel("Find or start a Direct Message").fill("@member");
   await owner.getByRole("button", { name: "member @member" }).click();
@@ -107,6 +111,19 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
 
   await owner.getByLabel("Message member").fill("private hello");
   await owner.getByRole("button", { name: "Send Direct Message" }).click();
+  const memberReadback = await member.evaluate(
+    async ({ apiOrigin, directMessageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/direct-messages/${directMessageId}/messages`,
+          { credentials: "include" },
+        )
+      ).json(),
+    { apiOrigin: harness.apiOrigin, directMessageId },
+  );
+  expect(memberReadback.messages).toEqual([
+    expect.objectContaining({ content: "private hello" }),
+  ]);
   await expect(
     member.getByText("private hello", { exact: true }),
   ).toBeVisible();

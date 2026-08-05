@@ -754,9 +754,16 @@ async fn events(
     let subject = require_session(&state.pool, &headers).await?;
     let mut changes = state.direct_message_changes.subscribe();
     Ok(websocket.on_upgrade(move |socket| async move {
-        let (mut sender, _) = socket.split();
+        let (mut sender, mut receiver) = socket.split();
         loop {
-            match changes.recv().await {
+            let event = tokio::select! {
+                event = changes.recv() => event,
+                message = receiver.next() => match message {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(_)) => continue,
+                }
+            };
+            match event {
                 Ok(event) => match can_access(&state, &subject, event.direct_message_id()).await {
                     Ok(true) => {
                         let Ok(payload) = serde_json::to_string(&event) else {

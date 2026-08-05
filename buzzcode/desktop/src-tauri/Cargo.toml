@@ -12,11 +12,13 @@ workspace = true
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
+buzzcode-host = { path = "../../crates/buzzcode-host" }
 rand.workspace = true
 serde.workspace = true
 tauri = { version = "2.10", features = [] }
 tauri-plugin-opener = "2.5.4"
 rfd = "0.15"
+tokio.workspace = true
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -56,6 +56,9 @@ export type ChannelMessage = Readonly<{
   content?: string;
   authorSubject: string;
   authorDisplayName: string;
+  authorKind: "user" | "agent";
+  authorAgentId?: string;
+  requestedBySubject?: string;
   createdAt: string;
   editedAt?: string;
   deletedAt?: string;
@@ -91,8 +94,20 @@ export type UserSearchResult = Readonly<{
   displayName: string;
 }>;
 
+export type AgentSearchResult = Readonly<{
+  agentId: string;
+  handle: string;
+  displayName: string;
+}>;
+
 export type MentionInput = Readonly<{
   userId: string;
+  start: number;
+  end: number;
+}>;
+
+export type AgentMentionInput = Readonly<{
+  agentId: string;
   start: number;
   end: number;
 }>;
@@ -156,6 +171,7 @@ export type Computer = Readonly<{
   createdAt: string;
   lastSeenAt?: string;
 }>;
+export type ComputerRegistration = Computer & Readonly<{ credential: string }>;
 
 export type ServerProject = Readonly<{
   id: string;
@@ -186,6 +202,10 @@ const apiOrigin =
   import.meta.env.VITE_BUZZCODE_API_ORIGIN ??
   "http://localhost:3100";
 const websocketOrigin = apiOrigin.replace(/^http/, "ws");
+
+export function buzzcodeApiOrigin(): string {
+  return apiOrigin;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -272,6 +292,7 @@ function parseChannelMessage(value: unknown): ChannelMessage {
     (value.content !== null && typeof value.content !== "string") ||
     typeof value.authorSubject !== "string" ||
     typeof value.authorDisplayName !== "string" ||
+    !["user", "agent"].includes(String(value.authorKind)) ||
     typeof value.createdAt !== "string" ||
     (value.editedAt !== null &&
       value.editedAt !== undefined &&
@@ -305,6 +326,13 @@ function parseChannelMessage(value: unknown): ChannelMessage {
     ...(typeof value.content === "string" ? { content: value.content } : {}),
     authorSubject: value.authorSubject,
     authorDisplayName: value.authorDisplayName,
+    authorKind: value.authorKind as ChannelMessage["authorKind"],
+    ...(typeof value.authorAgentId === "string"
+      ? { authorAgentId: value.authorAgentId }
+      : {}),
+    ...(typeof value.requestedBySubject === "string"
+      ? { requestedBySubject: value.requestedBySubject }
+      : {}),
     createdAt: value.createdAt,
     ...(typeof value.editedAt === "string" ? { editedAt: value.editedAt } : {}),
     ...(typeof value.deletedAt === "string"
@@ -396,6 +424,7 @@ function parseDirectMessageMessage(value: unknown): DirectMessageMessage {
   const channelShape = parseChannelMessage({
     ...value,
     channelId: value.directMessageId,
+    authorKind: "user",
   });
   const { channelId: _channelId, ...message } = channelShape;
   return { ...message, directMessageId: value.directMessageId };
@@ -728,6 +757,7 @@ export async function createChannelMessage(
   content: string,
   replyToMessageId?: string,
   mentions: readonly MentionInput[] = [],
+  agentMentions: readonly AgentMentionInput[] = [],
 ): Promise<ChannelMessage> {
   return parseResponse(
     await fetch(
@@ -736,7 +766,12 @@ export async function createChannelMessage(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content, replyToMessageId, mentions }),
+        body: JSON.stringify({
+          content,
+          replyToMessageId,
+          mentions,
+          agentMentions,
+        }),
       },
     ),
     parseChannelMessage,
@@ -870,6 +905,37 @@ export async function searchMentionCandidates(
     throw new Error("Buzzcode API returned invalid mention suggestions");
   }
   return value.map(parseUserSearchResult);
+}
+
+export async function searchAgentMentionCandidates(
+  serverId: string,
+  channelId: string,
+  query: string,
+): Promise<readonly AgentSearchResult[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/agent-mention-suggestions?q=${encodeURIComponent(query)}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned invalid Agent mention suggestions");
+  }
+  return value.map((agent) => {
+    if (
+      !isRecord(agent) ||
+      typeof agent.agentId !== "string" ||
+      typeof agent.handle !== "string" ||
+      typeof agent.displayName !== "string"
+    ) {
+      throw new Error("Buzzcode API returned an invalid Agent suggestion");
+    }
+    return {
+      agentId: agent.agentId,
+      handle: agent.handle,
+      displayName: agent.displayName,
+    };
+  });
 }
 
 function directMessageMessagesUrl(directMessageId: string): string {
@@ -1041,16 +1107,20 @@ export async function revokeComputer(computerId: string): Promise<void> {
 export async function registerComputer(
   installationId: string,
   name: string,
-): Promise<Computer> {
-  return parseResponse(
+): Promise<ComputerRegistration> {
+  const value = await parseResponse(
     await fetch(`${apiOrigin}/api/computers/register`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ installationId, name }),
     }),
-    parseComputer,
+    (body) => body,
   );
+  if (!isRecord(value) || typeof value.credential !== "string") {
+    throw new Error("Buzzcode API returned an invalid Computer credential");
+  }
+  return { ...parseComputer(value), credential: value.credential };
 }
 
 export async function listProjects(

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ApiError, AppState, ChannelSummary, ServerEvent,
-    hosts::{computer_recently_seen, computer_status},
+    hosts::{bind_project_folder, computer_recently_seen, computer_status},
     require_manager, require_member, require_origin, require_session,
 };
 
@@ -147,9 +147,7 @@ async fn create_project(
     .fetch_optional(&state.pool)
     .await?
     .ok_or(ApiError::NotFound)?;
-    if !computer_recently_seen(&state, computer_id).await? {
-        return Err(ApiError::Conflict);
-    }
+    let folder_path = bind_project_folder(&state, computer_id, folder_path).await?;
     let id = CsrfToken::new_random().secret().to_owned();
     let mut transaction = state.pool.begin().await?;
     let inserted = sqlx::query(
@@ -161,7 +159,7 @@ async fn create_project(
     .bind(&server_id)
     .bind(computer_id)
     .bind(name)
-    .bind(folder_path)
+    .bind(&folder_path)
     .bind(&subject)
     .execute(&mut *transaction)
     .await?;
@@ -178,7 +176,7 @@ async fn create_project(
     .bind(&subject)
     .bind(&id)
     .bind(computer_id)
-    .bind(folder_path)
+    .bind(&folder_path)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -188,7 +186,7 @@ async fn create_project(
         computer_id: computer_id.to_owned(),
         computer_name,
         computer_status: "online".to_owned(),
-        folder_path: folder_path.to_owned(),
+        folder_path,
         visibility: "open",
         channels: Vec::new(),
     };

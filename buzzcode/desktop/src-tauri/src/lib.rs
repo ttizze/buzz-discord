@@ -43,13 +43,23 @@ async fn select_project_folder() -> Option<String> {
         .map(|folder| folder.path().to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+fn start_computer_host(api_origin: String, computer_id: String, credential: String) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = buzzcode_host::run_embedded(api_origin, computer_id, credential).await {
+            eprintln!("Buzzcode Host stopped: {error}");
+        }
+    });
+}
+
 /// Starts the Buzzcode Tauri desktop shell.
 pub fn run() -> Result<(), tauri::Error> {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             computer_identity,
-            select_project_folder
+            select_project_folder,
+            start_computer_host
         ])
         .run(tauri::generate_context!())
 }
