@@ -29,280 +29,150 @@ test.afterAll(async () => {
   await harness.stop();
 });
 
-test("pairs multiple Hosts once while keeping each Host bound to one Server", async ({
+test("pairs a VPS as a user Computer without binding it to one Server", async ({
   page,
 }) => {
   await page.goto(harness.applicationUrl);
   await page.getByRole("button", { name: "Sign in with a passkey" }).click();
   await page.getByRole("button", { name: "Continue with passkey" }).click();
-  await page.getByLabel("Server name").fill("Compute Server");
+  await page.getByLabel("Server name").fill("First Server");
   await page.getByRole("button", { name: "Create Server" }).click();
 
-  const serverId = await page
-    .getByRole("button", { name: "Compute Server" })
-    .getAttribute("data-server-id");
-  expect(serverId).toBeTruthy();
-
-  const firstCode = await page.evaluate(
-    async ({ id, origin }) => {
-      const response = await fetch(
-        `${origin}/api/servers/${id}/host-pairing-codes`,
-        {
-          method: "POST",
-          credentials: "include",
-        },
-      );
-      const text = await response.text();
-      return {
-        status: response.status,
-        body: text === "" ? {} : JSON.parse(text),
-      };
-    },
-    { id: serverId, origin: harness.apiOrigin },
-  );
-  expect(firstCode.status).toBe(201);
-  expect(firstCode.body.code).toEqual(expect.any(String));
-  expect(firstCode.body.expiresAt).toEqual(expect.any(String));
-
-  const firstHost = await page.evaluate(
-    async ({ pairingCode, origin }) => {
-      const response = await fetch(`${origin}/api/hosts/pair`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pairingCode,
-          installationId: "host-one-installation",
-          name: "VPS One",
-        }),
-      });
-      return { status: response.status, body: await response.json() };
-    },
-    { pairingCode: firstCode.body.code, origin: harness.apiOrigin },
-  );
-  expect(firstHost.status).toBe(201);
-  expect(firstHost.body.serverId).toBe(serverId);
-  expect(firstHost.body.credential).toEqual(expect.any(String));
+  const pairing = await page.evaluate(async (origin) => {
+    const codeResponse = await fetch(`${origin}/api/host-pairing-codes`, {
+      method: "POST",
+      credentials: "include",
+    });
+    const codeBody = await codeResponse.json();
+    const pairResponse = await fetch(`${origin}/api/hosts/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pairingCode: codeBody.code,
+        installationId: "vps-installation",
+        name: "Shared VPS",
+      }),
+    });
+    return {
+      codeStatus: codeResponse.status,
+      code: codeBody.code,
+      pairStatus: pairResponse.status,
+      paired: await pairResponse.json(),
+    };
+  }, harness.apiOrigin);
+  expect(pairing.codeStatus).toBe(201);
+  expect(pairing.pairStatus).toBe(201);
+  expect(pairing.paired).toEqual({
+    computerId: expect.any(String),
+    credential: expect.any(String),
+  });
 
   const replayStatus = await page.evaluate(
-    async ({ pairingCode, origin }) => {
-      return (
+    async ({ code, origin }) =>
+      (
         await fetch(`${origin}/api/hosts/pair`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            pairingCode,
-            installationId: "host-two-installation",
-            name: "VPS Two",
+            pairingCode: code,
+            installationId: "replayed-installation",
+            name: "Replay",
           }),
         })
-      ).status;
-    },
-    { pairingCode: firstCode.body.code, origin: harness.apiOrigin },
+      ).status,
+    { code: pairing.code, origin: harness.apiOrigin },
   );
   expect(replayStatus).toBe(404);
 
-  const secondCode = await page.evaluate(
-    async ({ id, origin }) => {
-      const response = await fetch(
-        `${origin}/api/servers/${id}/host-pairing-codes`,
-        { method: "POST", credentials: "include" },
-      );
-      return (await response.json()).code as string;
-    },
-    { id: serverId, origin: harness.apiOrigin },
+  const directory = await mkdtemp(join(tmpdir(), "buzzcode-host-e2e-"));
+  const statePath = join(directory, "host.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      // Existing paired Hosts keep working after the Computer-model migration.
+      remoteEnvironmentId: pairing.paired.computerId,
+      apiOrigin: harness.apiOrigin,
+      credential: pairing.paired.credential,
+      installationId: "vps-installation",
+      name: "Shared VPS",
+    }),
   );
-  const secondHost = await page.evaluate(
-    async ({ pairingCode, origin }) => {
-      const response = await fetch(`${origin}/api/hosts/pair`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pairingCode,
-          installationId: "host-two-installation",
-          name: "VPS Two",
-        }),
+  let host = spawn(hostBinary, ["run", "--state", statePath], {
+    stdio: "ignore",
+  });
+  const computerStatus = async () => {
+    const result = await page.evaluate(async (origin) => {
+      const response = await fetch(`${origin}/api/computers`, {
+        credentials: "include",
       });
       return { status: response.status, body: await response.json() };
-    },
-    { pairingCode: secondCode, origin: harness.apiOrigin },
-  );
-  expect(secondHost.status).toBe(201);
-
-  const environments = await page.evaluate(
-    async ({ id, origin }) => {
-      const response = await fetch(
-        `${origin}/api/servers/${id}/remote-environments`,
-        { credentials: "include" },
-      );
-      return { status: response.status, body: await response.json() };
-    },
-    { id: serverId, origin: harness.apiOrigin },
-  );
-  expect(environments.status).toBe(200);
-  expect(environments.body).toEqual([
-    expect.objectContaining({ name: "VPS One", status: "offline" }),
-    expect.objectContaining({ name: "VPS Two", status: "offline" }),
-  ]);
-  await openServerSettings(page);
-  await expect(
-    page.getByRole("heading", { name: "Remote Environments" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("remote-environment-list")).toContainText(
-    "VPS OneOffline",
-  );
-  await page.getByRole("button", { name: "Create pairing code" }).click();
-  await expect(page.getByTestId("host-pairing-code")).not.toBeEmpty();
-
-  const hostDirectory = await mkdtemp(join(tmpdir(), "buzzcode-host-e2e-"));
-  const writeHostState = async (
-    fileName: string,
-    paired: { id: string; serverId: string; credential: string },
-    installationId: string,
-    name: string,
-  ) => {
-    const path = join(hostDirectory, fileName);
-    await writeFile(
-      path,
-      JSON.stringify({
-        remoteEnvironmentId: paired.id,
-        serverId: paired.serverId,
-        apiOrigin: harness.apiOrigin,
-        credential: paired.credential,
-        installationId,
-        name,
-      }),
-    );
-    return path;
-  };
-  const firstState = await writeHostState(
-    "host-one.json",
-    firstHost.body,
-    "host-one-installation",
-    "VPS One",
-  );
-  const secondState = await writeHostState(
-    "host-two.json",
-    secondHost.body,
-    "host-two-installation",
-    "VPS Two",
-  );
-  let firstProcess: ChildProcess | undefined;
-  let secondProcess: ChildProcess | undefined;
-  const environmentStatus = async (name: string) => {
-    const response = await page.evaluate(
-      async ({ id, origin }) => {
-        const result = await fetch(
-          `${origin}/api/servers/${id}/remote-environments`,
-          { credentials: "include" },
-        );
-        return result.json();
-      },
-      { id: serverId, origin: harness.apiOrigin },
-    );
-    return response.find(
-      (environment: { name: string; status: string }) =>
-        environment.name === name,
+    }, harness.apiOrigin);
+    if (!Array.isArray(result.body)) {
+      throw new Error(`computer list returned ${JSON.stringify(result)}`);
+    }
+    return result.body.find(
+      (computer: { id: string; status: string }) =>
+        computer.id === pairing.paired.computerId,
     )?.status as string | undefined;
   };
   try {
-    firstProcess = spawn(hostBinary, ["run", "--state", firstState], {
-      stdio: "ignore",
-    });
-    secondProcess = spawn(hostBinary, ["run", "--state", secondState], {
-      stdio: "ignore",
-    });
-    await expect.poll(() => environmentStatus("VPS One")).toBe("online");
-    await expect.poll(() => environmentStatus("VPS Two")).toBe("online");
+    await expect.poll(computerStatus).toBe("online");
+    await openServerSettings(page);
     await expect(
-      page.getByTestId(`remote-environment-${firstHost.body.id}`),
-    ).toContainText("Online");
+      page.getByRole("heading", { name: "Computers" }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId(`computer-${pairing.paired.computerId}`),
+    ).toContainText("Shared VPSOnline");
 
-    await stopHost(firstProcess);
-    await expect.poll(() => environmentStatus("VPS One")).toBe("reconnecting");
-    await expect
-      .poll(() => environmentStatus("VPS One"), { timeout: 5_000 })
-      .toBe("offline");
-    await expect(
-      page.getByTestId(`remote-environment-${firstHost.body.id}`),
-    ).toContainText("Offline");
-    expect(await environmentStatus("VPS Two")).toBe("online");
-    const channelMessageStatus = await page.evaluate(
-      async ({ id, origin }) => {
-        const channelResponse = await fetch(
-          `${origin}/api/servers/${id}/channels`,
-          {
+    const crossServerProjects = await page.evaluate(
+      async ({ computerId, origin }) => {
+        const createServer = async (name: string) => {
+          const response = await fetch(`${origin}/api/servers`, {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: "host-failure-check" }),
-          },
-        );
-        const channel = await channelResponse.json();
-        const messageResponse = await fetch(
-          `${origin}/api/servers/${id}/channels/${channel.id}/messages`,
-          {
+            body: JSON.stringify({ name }),
+          });
+          return response.json();
+        };
+        const first = await createServer("VPS Project Server One");
+        const second = await createServer("VPS Project Server Two");
+        const createProject = async (serverId: string, name: string) =>
+          fetch(`${origin}/api/servers/${serverId}/projects`, {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ content: "Server chat remains available" }),
-          },
-        );
-        return messageResponse.status;
+            body: JSON.stringify({
+              name,
+              computerId,
+              folderPath: `/srv/${name.toLowerCase().replaceAll(" ", "-")}`,
+            }),
+          });
+        return [
+          (await createProject(first.id, "First VPS Project")).status,
+          (await createProject(second.id, "Second VPS Project")).status,
+        ];
       },
-      { id: serverId, origin: harness.apiOrigin },
+      {
+        computerId: pairing.paired.computerId,
+        origin: harness.apiOrigin,
+      },
     );
-    expect(channelMessageStatus).toBe(201);
+    expect(crossServerProjects).toEqual([201, 201]);
 
-    firstProcess = spawn(hostBinary, ["run", "--state", firstState], {
+    await stopHost(host);
+    await expect.poll(computerStatus).toBe("reconnecting");
+    await expect.poll(computerStatus, { timeout: 5_000 }).toBe("offline");
+
+    host = spawn(hostBinary, ["run", "--state", statePath], {
       stdio: "ignore",
     });
-    await expect.poll(() => environmentStatus("VPS One")).toBe("online");
-    await page.getByRole("button", { name: "Revoke VPS One" }).click();
-    await expect.poll(() => environmentStatus("VPS One")).toBe("revoked");
-    await expect(
-      page.getByTestId(`remote-environment-${firstHost.body.id}`),
-    ).toContainText("Revoked");
-    expect(await environmentStatus("VPS Two")).toBe("online");
+    await expect.poll(computerStatus).toBe("online");
+    await page.getByRole("button", { name: "Revoke Shared VPS" }).click();
+    await expect.poll(computerStatus).toBe("revoked");
   } finally {
-    if (firstProcess !== undefined) await stopHost(firstProcess);
-    if (secondProcess !== undefined) await stopHost(secondProcess);
-    await rm(hostDirectory, { recursive: true, force: true });
+    await stopHost(host);
+    await rm(directory, { recursive: true, force: true });
   }
-
-  const otherServer = await page.evaluate(async (origin) => {
-    const response = await fetch(`${origin}/api/servers`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Other Server" }),
-    });
-    return (await response.json()).id as string;
-  }, harness.apiOrigin);
-  const otherServerCode = await page.evaluate(
-    async ({ id, origin }) => {
-      const response = await fetch(
-        `${origin}/api/servers/${id}/host-pairing-codes`,
-        { method: "POST", credentials: "include" },
-      );
-      return (await response.json()).code as string;
-    },
-    { id: otherServer, origin: harness.apiOrigin },
-  );
-  const crossServerStatus = await page.evaluate(
-    async ({ pairingCode, origin }) => {
-      return (
-        await fetch(`${origin}/api/hosts/pair`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            pairingCode,
-            installationId: "host-one-installation",
-            name: "VPS One",
-          }),
-        })
-      ).status;
-    },
-    { pairingCode: otherServerCode, origin: harness.apiOrigin },
-  );
-  expect(crossServerStatus).toBe(409);
 });

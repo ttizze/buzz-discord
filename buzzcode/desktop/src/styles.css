@@ -774,6 +774,27 @@ button:disabled {
   white-space: nowrap;
 }
 
+.project-category-heading > div {
+  min-width: 0;
+}
+
+.project-computer-status {
+  display: block;
+  overflow: hidden;
+  color: #7f8da2;
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-computer-status.online {
+  color: #7bc99a;
+}
+
+.project-computer-status.reconnecting {
+  color: #e2bd73;
+}
+
 .project-category-heading button {
   padding: 0 0.35rem;
   color: var(--muted);

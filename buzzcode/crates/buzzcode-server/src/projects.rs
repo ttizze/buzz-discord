@@ -10,7 +10,8 @@ use openidconnect::CsrfToken;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiError, AppState, ChannelSummary, ServerEvent, hosts::repositories_for_online_host,
+    ApiError, AppState, ChannelSummary, ServerEvent,
+    hosts::{computer_recently_seen, computer_status},
     require_manager, require_member, require_origin, require_session,
 };
 
@@ -30,8 +31,8 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateProject {
     name: String,
-    remote_environment_id: String,
-    repository_path: String,
+    computer_id: String,
+    folder_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,8 +46,10 @@ struct CreateProjectChannel {
 struct ProjectSummary {
     id: String,
     name: String,
-    remote_environment_id: String,
-    repository_path: String,
+    computer_id: String,
+    computer_name: String,
+    computer_status: String,
+    folder_path: String,
     visibility: &'static str,
     channels: Vec<ChannelSummary>,
 }
@@ -59,10 +62,12 @@ async fn list_projects(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let rows = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT id, name, remote_environment_id, repository_path \
-         FROM server_projects WHERE server_id = $1 AND visibility = 'open' \
-         ORDER BY created_at, id",
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, bool)>(
+        "SELECT server_projects.id, server_projects.name, computer_id, computers.name, \
+                folder_path, computers.revoked_at IS NOT NULL \
+         FROM server_projects JOIN computers ON computers.id = computer_id \
+         WHERE server_id = $1 AND visibility = 'open' \
+         ORDER BY server_projects.created_at, server_projects.id",
     )
     .bind(&server_id)
     .fetch_all(&state.pool)
@@ -87,20 +92,30 @@ async fn list_projects(
                 member_subjects: Vec::new(),
             });
     }
-    Ok(Json(
-        rows.into_iter()
-            .map(
-                |(id, name, remote_environment_id, repository_path)| ProjectSummary {
-                    channels: channels_by_project.remove(&id).unwrap_or_default(),
-                    id,
-                    name,
-                    remote_environment_id,
-                    repository_path,
-                    visibility: "open",
-                },
-            )
-            .collect(),
-    ))
+    let mut projects = Vec::with_capacity(rows.len());
+    for (id, name, computer_id, computer_name, folder_path, revoked) in rows {
+        let connected_status = computer_status(&state, &computer_id).await;
+        let computer_status = if revoked {
+            "revoked".to_owned()
+        } else if connected_status != "offline" {
+            connected_status.to_owned()
+        } else if computer_recently_seen(&state, &computer_id).await? {
+            "online".to_owned()
+        } else {
+            "offline".to_owned()
+        };
+        projects.push(ProjectSummary {
+            channels: channels_by_project.remove(&id).unwrap_or_default(),
+            id,
+            name,
+            computer_id,
+            computer_name,
+            computer_status,
+            folder_path,
+            visibility: "open",
+        });
+    }
+    Ok(Json(projects))
 }
 
 async fn create_project(
@@ -113,36 +128,40 @@ async fn create_project(
     let subject = require_session(&state.pool, &headers).await?;
     require_manager(&state.pool, &subject, &server_id).await?;
     let name = input.name.trim();
-    let repository_path = input.repository_path.trim();
+    let computer_id = input.computer_id.trim();
+    let folder_path = input.folder_path.trim();
     if name.is_empty()
         || name.chars().count() > 100
-        || input.remote_environment_id.trim().is_empty()
-        || repository_path.is_empty()
-        || repository_path.len() > 4096
+        || computer_id.is_empty()
+        || folder_path.is_empty()
+        || folder_path.len() > 4096
     {
         return Err(ApiError::InvalidRequest);
     }
-    let repositories =
-        repositories_for_online_host(&state, &server_id, input.remote_environment_id.trim())
-            .await?;
-    if !repositories
-        .iter()
-        .any(|repository| repository.path == repository_path)
-    {
-        return Err(ApiError::InvalidRequest);
+    let computer_name = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM computers \
+         WHERE id = $1 AND owner_subject = $2 AND revoked_at IS NULL",
+    )
+    .bind(computer_id)
+    .bind(&subject)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    if !computer_recently_seen(&state, computer_id).await? {
+        return Err(ApiError::Conflict);
     }
     let id = CsrfToken::new_random().secret().to_owned();
     let mut transaction = state.pool.begin().await?;
     let inserted = sqlx::query(
         "INSERT INTO server_projects \
-         (id, server_id, remote_environment_id, name, repository_path, created_by_subject) \
+         (id, server_id, computer_id, name, folder_path, created_by_subject) \
          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
     )
     .bind(&id)
     .bind(&server_id)
-    .bind(input.remote_environment_id.trim())
+    .bind(computer_id)
     .bind(name)
-    .bind(repository_path)
+    .bind(folder_path)
     .bind(&subject)
     .execute(&mut *transaction)
     .await?;
@@ -152,22 +171,24 @@ async fn create_project(
     sqlx::query(
         "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
          VALUES ($1, $2, 'project.created', jsonb_build_object( \
-             'projectId', $3::TEXT, 'remoteEnvironmentId', $4::TEXT, \
-             'repositoryPath', $5::TEXT, 'visibility', 'open'))",
+             'projectId', $3::TEXT, 'computerId', $4::TEXT, \
+             'folderPath', $5::TEXT, 'visibility', 'open'))",
     )
     .bind(&server_id)
     .bind(&subject)
     .bind(&id)
-    .bind(input.remote_environment_id.trim())
-    .bind(repository_path)
+    .bind(computer_id)
+    .bind(folder_path)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
     let project = ProjectSummary {
         id,
         name: name.to_owned(),
-        remote_environment_id: input.remote_environment_id.trim().to_owned(),
-        repository_path: repository_path.to_owned(),
+        computer_id: computer_id.to_owned(),
+        computer_name,
+        computer_status: "online".to_owned(),
+        folder_path: folder_path.to_owned(),
         visibility: "open",
         channels: Vec::new(),
     };

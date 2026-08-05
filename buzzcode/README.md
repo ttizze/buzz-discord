@@ -42,10 +42,10 @@ are placed in the browser URL.
 
 For split terminals, run `just server` and `just desktop` after `just db-start`.
 
-## Pair a Remote Environment
+## Pair a VPS Computer
 
-Each VPS runs one outbound-only `buzzcode-host`. An Owner or Admin creates a
-10-minute, one-time pairing code from **Server Settings → Remote Environments**.
+Each VPS runs one outbound-only `buzzcode-host`. A signed-in user creates a
+10-minute, one-time pairing code from **Server Settings → Computers**.
 On that VPS, build or install the Host and pair it once:
 
 ```bash
@@ -56,18 +56,21 @@ cargo build --release -p buzzcode-host
   --name 'Production VPS 1' \
   --state /var/lib/buzzcode-host/state.json
 ./target/release/buzzcode-host run \
-  --state /var/lib/buzzcode-host/state.json \
-  --repository /srv/projects/buzzcode \
-  --repository /srv/projects/another-repository
+  --state /var/lib/buzzcode-host/state.json
 ```
 
 Run the second command under the VPS service manager with automatic restart.
-The state file is created with owner-only permissions and binds that Host
-installation to exactly one Server. A Server may have multiple Hosts. The Host
-opens an authenticated outbound WebSocket; Buzzcode does not need the VPS SSH
-private key or an inbound Host port. Each `--repository` path must resolve to a
-Git work tree; non-Git paths are ignored. While the Host is Online, an Owner or
-Admin can select one of these repositories when creating an Open Project.
+The state file is created with owner-only permissions and binds that Host to the
+user's Computer. It is not owned by one Server: Projects on the Computer may be
+shared into multiple Servers. The Host opens an authenticated outbound
+WebSocket; Buzzcode does not need the VPS SSH private key or an inbound Host
+port, and it does not advertise a static repository or folder list.
+
+To add a Project, use Buzzcode on the Computer that owns the folder and choose
+that local folder. The folder may be inside or outside Git. Buzzcode records the
+creating Computer automatically; it never asks the user to select a VPS or Host.
+Project metadata, Channels, and chat remain available while that Computer is
+Offline, while file access and Agents wait for the Computer to reconnect.
 
 ## Quality gates
 

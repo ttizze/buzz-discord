@@ -11,7 +11,6 @@ export type ServerEvent =
   | Readonly<{ type: "serverDeleted" }>
   | Readonly<{ type: "channelCreated"; channel: Channel }>
   | Readonly<{ type: "channelAccessChanged" }>
-  | Readonly<{ type: "remoteEnvironmentsChanged" }>
   | Readonly<{ type: "projectsChanged" }>
   | Readonly<{ type: "messageCreated"; message: ChannelMessage }>
   | Readonly<{
@@ -150,25 +149,21 @@ export type HostPairingCode = Readonly<{
   expiresAt: string;
 }>;
 
-export type RemoteEnvironment = Readonly<{
+export type Computer = Readonly<{
   id: string;
-  serverId: string;
   name: string;
   status: "online" | "offline" | "reconnecting" | "revoked";
   createdAt: string;
   lastSeenAt?: string;
 }>;
 
-export type HostRepository = Readonly<{
-  name: string;
-  path: string;
-}>;
-
 export type ServerProject = Readonly<{
   id: string;
   name: string;
-  remoteEnvironmentId: string;
-  repositoryPath: string;
+  computerId: string;
+  computerName: string;
+  computerStatus: Computer["status"];
+  folderPath: string;
   visibility: "open";
   channels: readonly Channel[];
 }>;
@@ -235,7 +230,6 @@ function parseServerEvent(value: unknown): ServerEvent {
     (value.type === "membershipChanged" ||
       value.type === "serverDeleted" ||
       value.type === "channelAccessChanged" ||
-      value.type === "remoteEnvironmentsChanged" ||
       value.type === "projectsChanged")
   ) {
     return { type: value.type };
@@ -479,11 +473,10 @@ function parseHostPairingCode(value: unknown): HostPairingCode {
   return { code: value.code, expiresAt: value.expiresAt };
 }
 
-function parseRemoteEnvironment(value: unknown): RemoteEnvironment {
+function parseComputer(value: unknown): Computer {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
-    typeof value.serverId !== "string" ||
     typeof value.name !== "string" ||
     !["online", "offline", "reconnecting", "revoked"].includes(
       String(value.status),
@@ -493,13 +486,12 @@ function parseRemoteEnvironment(value: unknown): RemoteEnvironment {
       value.lastSeenAt !== null &&
       typeof value.lastSeenAt !== "string")
   ) {
-    throw new Error("Buzzcode API returned an invalid Remote Environment");
+    throw new Error("Buzzcode API returned an invalid Computer");
   }
   return {
     id: value.id,
-    serverId: value.serverId,
     name: value.name,
-    status: value.status as RemoteEnvironment["status"],
+    status: value.status as Computer["status"],
     createdAt: value.createdAt,
     ...(typeof value.lastSeenAt === "string"
       ? { lastSeenAt: value.lastSeenAt }
@@ -507,24 +499,17 @@ function parseRemoteEnvironment(value: unknown): RemoteEnvironment {
   };
 }
 
-function parseHostRepository(value: unknown): HostRepository {
-  if (
-    !isRecord(value) ||
-    typeof value.name !== "string" ||
-    typeof value.path !== "string"
-  ) {
-    throw new Error("Buzzcode API returned an invalid Host repository");
-  }
-  return { name: value.name, path: value.path };
-}
-
 function parseServerProject(value: unknown): ServerProject {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
-    typeof value.remoteEnvironmentId !== "string" ||
-    typeof value.repositoryPath !== "string" ||
+    typeof value.computerId !== "string" ||
+    typeof value.computerName !== "string" ||
+    !["online", "offline", "reconnecting", "revoked"].includes(
+      String(value.computerStatus),
+    ) ||
+    typeof value.folderPath !== "string" ||
     value.visibility !== "open" ||
     !Array.isArray(value.channels)
   ) {
@@ -533,8 +518,10 @@ function parseServerProject(value: unknown): ServerProject {
   return {
     id: value.id,
     name: value.name,
-    remoteEnvironmentId: value.remoteEnvironmentId,
-    repositoryPath: value.repositoryPath,
+    computerId: value.computerId,
+    computerName: value.computerName,
+    computerStatus: value.computerStatus as Computer["status"],
+    folderPath: value.folderPath,
     visibility: value.visibility,
     channels: value.channels.map(parseChannel),
   };
@@ -1021,58 +1008,49 @@ export async function createInvitation(
   );
 }
 
-export async function createHostPairingCode(
-  serverId: string,
-): Promise<HostPairingCode> {
+export async function createHostPairingCode(): Promise<HostPairingCode> {
   return parseResponse(
-    await fetch(
-      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/host-pairing-codes`,
-      { method: "POST", credentials: "include" },
-    ),
+    await fetch(`${apiOrigin}/api/host-pairing-codes`, {
+      method: "POST",
+      credentials: "include",
+    }),
     parseHostPairingCode,
   );
 }
 
-export async function listRemoteEnvironments(
-  serverId: string,
-): Promise<readonly RemoteEnvironment[]> {
-  const response = await fetch(
-    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments`,
-    { credentials: "include" },
-  );
+export async function listComputers(): Promise<readonly Computer[]> {
+  const response = await fetch(`${apiOrigin}/api/computers`, {
+    credentials: "include",
+  });
   if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
   const value: unknown = await response.json();
   if (!Array.isArray(value)) {
-    throw new Error("Buzzcode API returned an invalid Remote Environment list");
+    throw new Error("Buzzcode API returned an invalid Computer list");
   }
-  return value.map(parseRemoteEnvironment);
+  return value.map(parseComputer);
 }
 
-export async function revokeRemoteEnvironment(
-  serverId: string,
-  environmentId: string,
-): Promise<void> {
+export async function revokeComputer(computerId: string): Promise<void> {
   const response = await fetch(
-    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments/${encodeURIComponent(environmentId)}`,
+    `${apiOrigin}/api/computers/${encodeURIComponent(computerId)}`,
     { method: "DELETE", credentials: "include" },
   );
   if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
 }
 
-export async function listHostRepositories(
-  serverId: string,
-  environmentId: string,
-): Promise<readonly HostRepository[]> {
-  const response = await fetch(
-    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments/${encodeURIComponent(environmentId)}/repositories`,
-    { credentials: "include" },
+export async function registerComputer(
+  installationId: string,
+  name: string,
+): Promise<Computer> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/computers/register`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ installationId, name }),
+    }),
+    parseComputer,
   );
-  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
-  const value: unknown = await response.json();
-  if (!Array.isArray(value)) {
-    throw new Error("Buzzcode API returned an invalid Host repository list");
-  }
-  return value.map(parseHostRepository);
 }
 
 export async function listProjects(
@@ -1093,8 +1071,8 @@ export async function listProjects(
 export async function createProject(
   serverId: string,
   name: string,
-  remoteEnvironmentId: string,
-  repositoryPath: string,
+  computerId: string,
+  folderPath: string,
 ): Promise<ServerProject> {
   return parseResponse(
     await fetch(
@@ -1103,7 +1081,7 @@ export async function createProject(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, remoteEnvironmentId, repositoryPath }),
+        body: JSON.stringify({ name, computerId, folderPath }),
       },
     ),
     parseServerProject,

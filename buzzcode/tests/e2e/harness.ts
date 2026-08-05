@@ -155,6 +155,7 @@ export class E2eHarness {
         BUZZCODE_OIDC_REDIRECT_URI: `${apiOrigin}/api/auth/callback`,
         BUZZCODE_SESSION_COOKIE_SECURE: "false",
         BUZZCODE_HOST_RECONNECT_GRACE_MS: "1000",
+        BUZZCODE_COMPUTER_ONLINE_TTL_MS: "1000",
         RUST_LOG: "buzzcode_server=info",
       },
       stdio: ["ignore", "pipe", "pipe"],

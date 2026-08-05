@@ -1,15 +1,17 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
 
 const harness = new E2eHarness();
-const hostBinary = resolve(
-  import.meta.dirname,
-  "../../target/debug/buzzcode-host",
-);
+
+async function signIn(page: Page, user: string): Promise<void> {
+  await fetch(`${harness.identityProviderOrigin}/test/next-token?user=${user}`);
+  await page.goto(harness.applicationUrl);
+  await page.getByRole("button", { name: "Sign in with a passkey" }).click();
+  await page.getByRole("button", { name: "Continue with passkey" }).click();
+}
 
 test.beforeAll(async () => {
   await harness.start();
@@ -19,322 +21,197 @@ test.afterAll(async () => {
   await harness.stop();
 });
 
-async function stopHost(host: ChildProcess): Promise<void> {
-  if (host.exitCode !== null || host.signalCode !== null) return;
-  const exited = new Promise<void>((resolveExit) =>
-    host.once("exit", () => resolveExit()),
-  );
-  host.kill("SIGTERM");
-  await exited;
-}
-
-async function signIn(page: Page, user: string): Promise<void> {
-  await fetch(`${harness.identityProviderOrigin}/test/next-token?user=${user}`);
-  await page.goto(harness.applicationUrl);
-  await page.getByRole("button", { name: "Sign in with a passkey" }).click();
-  await page.getByRole("button", { name: "Continue with passkey" }).click();
-}
-
-test("an Online Host exposes Git repositories for Open Project creation", async ({
+test("adds an Open Project from a non-Git folder on the current Computer", async ({
   browser,
   page,
 }) => {
-  await page.goto(harness.applicationUrl);
-  await page.getByRole("button", { name: "Sign in with a passkey" }).click();
-  await page.getByRole("button", { name: "Continue with passkey" }).click();
-  await page.getByLabel("Server name").fill("Project Server");
-  await page.getByRole("button", { name: "Create Server" }).click();
-  const serverId = await page
-    .getByRole("button", { name: "Project Server" })
-    .getAttribute("data-server-id");
-  expect(serverId).toBeTruthy();
-
-  const pairing = await page.evaluate(
-    async ({ id, origin }) => {
-      const codeResponse = await fetch(
-        `${origin}/api/servers/${id}/host-pairing-codes`,
-        { method: "POST", credentials: "include" },
-      );
-      const { code } = await codeResponse.json();
-      const pairResponse = await fetch(`${origin}/api/hosts/pair`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pairingCode: code,
-          installationId: "project-host-installation",
-          name: "Project VPS",
-        }),
-      });
-      return pairResponse.json();
-    },
-    { id: serverId, origin: harness.apiOrigin },
-  );
-
   const directory = await mkdtemp(join(tmpdir(), "buzzcode-project-e2e-"));
-  const repositoryPath = join(directory, "sample-repository");
-  const nonGitPath = join(directory, "ordinary-folder");
-  await mkdir(nonGitPath);
-  const git = spawnSync("git", ["init", "--quiet", repositoryPath]);
-  expect(git.status).toBe(0);
-  const exposedRepositoryPath = await realpath(repositoryPath);
-  const statePath = join(directory, "host.json");
-  await writeFile(
-    statePath,
-    JSON.stringify({
-      remoteEnvironmentId: pairing.id,
-      serverId: pairing.serverId,
-      apiOrigin: harness.apiOrigin,
-      credential: pairing.credential,
-      installationId: "project-host-installation",
-      name: "Project VPS",
-    }),
-  );
-
-  await expect(
-    page.getByRole("button", { name: "Add Project" }),
-  ).toBeDisabled();
-
-  const offlineStatus = await page.evaluate(
-    async ({ environmentId, id, origin, repositoryPath }) =>
+  const folderPath = join(directory, "ordinary-folder");
+  await mkdir(folderPath);
+  await page.addInitScript(
+    ({ selectedFolder }) => {
       (
-        await fetch(`${origin}/api/servers/${id}/projects`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "Offline Project",
-            remoteEnvironmentId: environmentId,
-            repositoryPath,
-          }),
-        })
-      ).status,
-    {
-      environmentId: pairing.id,
-      id: serverId,
-      origin: harness.apiOrigin,
-      repositoryPath,
+        window as Window & {
+          __BUZZCODE_E2E_COMPUTER__?: {
+            installationId: string;
+            name: string;
+            selectedFolder: string;
+          };
+        }
+      ).__BUZZCODE_E2E_COMPUTER__ = {
+        installationId: "owner-mac-installation",
+        name: "Owner Mac",
+        selectedFolder,
+      };
     },
+    { selectedFolder: folderPath },
   );
-  expect(offlineStatus).toBe(409);
 
-  const host = spawn(
-    hostBinary,
-    [
-      "run",
-      "--state",
-      statePath,
-      "--repository",
-      repositoryPath,
-      "--repository",
-      nonGitPath,
-    ],
-    { stdio: "ignore" },
-  );
   try {
-    await expect
-      .poll(async () => {
-        const environments = await page.evaluate(
-          async ({ id, origin }) =>
-            (
-              await fetch(`${origin}/api/servers/${id}/remote-environments`, {
-                credentials: "include",
-              })
-            ).json(),
-          { id: serverId, origin: harness.apiOrigin },
-        );
-        return environments.find(
-          (environment: { id: string; status: string }) =>
-            environment.id === pairing.id,
-        )?.status;
-      })
-      .toBe("online");
+    await page.goto(harness.applicationUrl);
+    await page.getByRole("button", { name: "Sign in with a passkey" }).click();
+    await page.getByRole("button", { name: "Continue with passkey" }).click();
+    await page.getByLabel("Server name").fill("Project Server");
+    await page.getByRole("button", { name: "Create Server" }).click();
+    const serverId = await page
+      .getByRole("button", { name: "Project Server" })
+      .getAttribute("data-server-id");
+    expect(serverId).toBeTruthy();
+
     await expect(
       page.getByRole("button", { name: "Add Project" }),
     ).toBeEnabled();
-
-    const repositories = await page.evaluate(
-      async ({ environmentId, id, origin }) => {
-        const response = await fetch(
-          `${origin}/api/servers/${id}/remote-environments/${environmentId}/repositories`,
-          { credentials: "include" },
-        );
-        return { status: response.status, body: await response.json() };
-      },
-      { environmentId: pairing.id, id: serverId, origin: harness.apiOrigin },
-    );
-    expect(repositories).toEqual({
-      status: 200,
-      body: [
-        {
-          name: basename(exposedRepositoryPath),
-          path: exposedRepositoryPath,
-        },
-      ],
-    });
-
-    const nonGitStatus = await page.evaluate(
-      async ({ environmentId, id, origin, repositoryPath }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/projects`, {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              name: "Not Git",
-              remoteEnvironmentId: environmentId,
-              repositoryPath,
-            }),
-          })
-        ).status,
-      {
-        environmentId: pairing.id,
-        id: serverId,
-        origin: harness.apiOrigin,
-        repositoryPath: nonGitPath,
-      },
-    );
-    expect(nonGitStatus).toBe(400);
-
-    const created = await page.evaluate(
-      async ({ environmentId, id, origin, repositoryPath }) => {
-        const response = await fetch(`${origin}/api/servers/${id}/projects`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "Buzzcode",
-            remoteEnvironmentId: environmentId,
-            repositoryPath,
-          }),
-        });
-        return { status: response.status, body: await response.json() };
-      },
-      {
-        environmentId: pairing.id,
-        id: serverId,
-        origin: harness.apiOrigin,
-        repositoryPath: exposedRepositoryPath,
-      },
-    );
-    expect(created).toEqual({
-      status: 201,
-      body: expect.objectContaining({
-        name: "Buzzcode",
-        remoteEnvironmentId: pairing.id,
-        repositoryPath: exposedRepositoryPath,
-        visibility: "open",
-        channels: [],
-      }),
-    });
-
-    const projects = await page.evaluate(
-      async ({ id, origin }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/projects`, {
-            credentials: "include",
-          })
-        ).json(),
-      { id: serverId, origin: harness.apiOrigin },
-    );
-    expect(projects).toEqual([created.body]);
-    await expect(page.getByRole("heading", { name: "Buzzcode" })).toBeVisible();
-
     await page.getByRole("button", { name: "Add Project" }).click();
     await expect(
       page.getByRole("dialog", { name: "Create Open Project" }),
     ).toBeVisible();
-    await expect(page.getByLabel("Git repository")).toBeDisabled();
-    await page.getByLabel("Project name").fill("Desktop Project");
-    await page
-      .getByLabel("Remote Environment")
-      .selectOption({ label: "Project VPS" });
-    await expect(page.getByLabel("Git repository")).toBeEnabled();
-    await page.getByLabel("Git repository").selectOption(exposedRepositoryPath);
+    await expect(page.getByLabel("Remote Environment")).toHaveCount(0);
+    await expect(page.getByLabel("Git repository")).toHaveCount(0);
+
+    await page.getByLabel("Project name").fill("Local Folder Project");
+    await page.getByRole("button", { name: "Choose Project Folder" }).click();
+    await expect(page.getByTestId("selected-project-folder")).toHaveText(
+      folderPath,
+    );
     await page
       .getByRole("button", { name: "Create Open Project", exact: true })
       .click();
     await expect(
-      page.getByRole("heading", { name: "Desktop Project" }),
+      page.getByRole("heading", { name: "Local Folder Project" }),
     ).toBeVisible();
 
-    await page
-      .getByRole("button", { name: "Add Channel to Desktop Project" })
-      .click();
-    await page.getByLabel("Project Channel name").fill("design");
-    await page
-      .getByRole("button", { name: "Create Project Channel", exact: true })
-      .click();
-    await expect(page.getByTestId("active-channel-name")).toHaveText(
-      "# design",
+    const projects = await page.evaluate(
+      async ({ id, origin }) => {
+        const response = await fetch(`${origin}/api/servers/${id}/projects`, {
+          credentials: "include",
+        });
+        return { status: response.status, body: await response.json() };
+      },
+      { id: serverId, origin: harness.apiOrigin },
     );
+    expect(projects).toEqual({
+      status: 200,
+      body: [
+        expect.objectContaining({
+          name: "Local Folder Project",
+          computerId: expect.any(String),
+          computerName: "Owner Mac",
+          computerStatus: "online",
+          folderPath,
+          visibility: "open",
+          channels: [],
+        }),
+      ],
+    });
 
-    const projectChannel = await page.evaluate(
-      async ({ id, origin, projectId }) => {
-        const response = await fetch(
-          `${origin}/api/servers/${id}/projects/${projectId}/channels`,
+    const firstProject = projects.body[0];
+    const secondServer = await page.evaluate(
+      async ({ computerId, folderPath, origin }) => {
+        const serverResponse = await fetch(`${origin}/api/servers`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Second Server" }),
+        });
+        const server = await serverResponse.json();
+        const projectResponse = await fetch(
+          `${origin}/api/servers/${server.id}/projects`,
           {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name: "implementation" }),
+            body: JSON.stringify({
+              name: "Same Computer Project",
+              computerId,
+              folderPath,
+            }),
           },
         );
-        const text = await response.text();
         return {
-          status: response.status,
-          body: text === "" ? {} : JSON.parse(text),
+          status: projectResponse.status,
+          body: await projectResponse.json(),
         };
       },
-      { id: serverId, origin: harness.apiOrigin, projectId: created.body.id },
-    );
-    expect(projectChannel).toEqual({
-      status: 201,
-      body: expect.objectContaining({
-        name: "implementation",
-        visibility: "open",
-      }),
-    });
-
-    const directChannels = await page.evaluate(
-      async ({ id, origin }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/channels`, {
-            credentials: "include",
-          })
-        ).json(),
-      { id: serverId, origin: harness.apiOrigin },
-    );
-    expect(directChannels).toEqual([]);
-
-    const moveOrVisibilityChange = await page.evaluate(
-      async ({ channelId, id, origin }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/channels/${channelId}`, {
-            method: "PATCH",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ visibility: "private" }),
-          })
-        ).status,
       {
-        channelId: projectChannel.body.id,
-        id: serverId,
+        computerId: firstProject.computerId,
+        folderPath,
         origin: harness.apiOrigin,
       },
     );
-    expect(moveOrVisibilityChange).toBe(409);
+    expect(secondServer).toEqual({
+      status: 201,
+      body: expect.objectContaining({
+        computerId: firstProject.computerId,
+        folderPath,
+      }),
+    });
+
+    await page
+      .getByRole("button", { name: "Add Channel to Local Folder Project" })
+      .click();
+    await page.getByLabel("Project Channel name").fill("implementation");
+    await page
+      .getByRole("button", { name: "Create Project Channel", exact: true })
+      .click();
+    await expect(page.getByTestId("active-channel-name")).toHaveText(
+      "# implementation",
+    );
+    const channel = await page.evaluate(
+      async ({ origin, serverId }) => {
+        const projects = await (
+          await fetch(`${origin}/api/servers/${serverId}/projects`, {
+            credentials: "include",
+          })
+        ).json();
+        return projects[0].channels[0];
+      },
+      { origin: harness.apiOrigin, serverId },
+    );
+    expect(channel).toEqual(
+      expect.objectContaining({ name: "implementation", visibility: "open" }),
+    );
+
+    const placementGuards = await page.evaluate(
+      async ({ channelId, origin, serverId }) => {
+        const directChannels = await (
+          await fetch(`${origin}/api/servers/${serverId}/channels`, {
+            credentials: "include",
+          })
+        ).json();
+        const visibilityStatus = (
+          await fetch(
+            `${origin}/api/servers/${serverId}/channels/${channelId}`,
+            {
+              method: "PATCH",
+              credentials: "include",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ visibility: "private" }),
+            },
+          )
+        ).status;
+        return { directChannels, visibilityStatus };
+      },
+      { channelId: channel.id, origin: harness.apiOrigin, serverId },
+    );
+    expect(placementGuards).toEqual({
+      directChannels: [],
+      visibilityStatus: 409,
+    });
 
     const invitation = await page.evaluate(
-      async ({ id, origin }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/invitations`, {
+      async ({ origin, serverId }) => {
+        const response = await fetch(
+          `${origin}/api/servers/${serverId}/invitations`,
+          {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ email: "member@example.com" }),
-          })
-        ).json(),
-      { id: serverId, origin: harness.apiOrigin },
+          },
+        );
+        return response.json();
+      },
+      { origin: harness.apiOrigin, serverId },
     );
     const memberContext = await browser.newContext();
     try {
@@ -343,141 +220,92 @@ test("an Online Host exposes Git repositories for Open Project creation", async 
       await member.getByLabel("Invitation code").fill(invitation.token);
       await member.getByRole("button", { name: "Join Server" }).click();
       await expect(
-        member.getByRole("heading", { name: "Buzzcode" }),
-      ).toBeVisible();
-      await expect(
-        member.getByRole("heading", { name: "Desktop Project" }),
+        member.getByRole("heading", { name: "Local Folder Project" }),
       ).toBeVisible();
       await expect(
         member.getByRole("button", { name: "implementation" }),
       ).toBeVisible();
       await expect(
-        member.getByRole("button", { name: "design" }),
-      ).toBeVisible();
-      await expect(
         member.getByRole("button", { name: "Add Project" }),
       ).toHaveCount(0);
-      await expect(
-        member.getByRole("button", { name: /Add Channel to/ }),
-      ).toHaveCount(0);
-
-      const memberAccess = await member.evaluate(
-        async ({ environmentId, id, origin, projectId, repositoryPath }) => {
-          const listResponse = await fetch(
-            `${origin}/api/servers/${id}/projects`,
-            { credentials: "include" },
-          );
-          const createProjectResponse = await fetch(
-            `${origin}/api/servers/${id}/projects`,
-            {
+      const forbidden = await member.evaluate(
+        async ({ computerId, folderPath, origin, projectId, serverId }) => {
+          const projectStatus = (
+            await fetch(`${origin}/api/servers/${serverId}/projects`, {
               method: "POST",
               credentials: "include",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({
-                name: "Forbidden Project",
-                remoteEnvironmentId: environmentId,
-                repositoryPath,
+                name: "Member Project",
+                computerId,
+                folderPath,
               }),
-            },
-          );
-          const createChannelResponse = await fetch(
-            `${origin}/api/servers/${id}/projects/${projectId}/channels`,
-            {
-              method: "POST",
-              credentials: "include",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ name: "forbidden-channel" }),
-            },
-          );
-          return {
-            projects: await listResponse.json(),
-            createProjectStatus: createProjectResponse.status,
-            createChannelStatus: createChannelResponse.status,
-          };
+            })
+          ).status;
+          const channelStatus = (
+            await fetch(
+              `${origin}/api/servers/${serverId}/projects/${projectId}/channels`,
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ name: "member-channel" }),
+              },
+            )
+          ).status;
+          return { channelStatus, projectStatus };
         },
         {
-          environmentId: pairing.id,
-          id: serverId,
+          computerId: firstProject.computerId,
+          folderPath,
           origin: harness.apiOrigin,
-          projectId: created.body.id,
-          repositoryPath: exposedRepositoryPath,
+          projectId: firstProject.id,
+          serverId,
         },
       );
-      expect(memberAccess.projects).toHaveLength(2);
-      expect(memberAccess.projects[0].channels).toEqual([projectChannel.body]);
-      expect(memberAccess.createProjectStatus).toBe(403);
-      expect(memberAccess.createChannelStatus).toBe(403);
+      expect(forbidden).toEqual({ channelStatus: 403, projectStatus: 403 });
     } finally {
       await memberContext.close();
     }
 
-    await stopHost(host);
-    await expect
-      .poll(async () => {
-        const environments = await page.evaluate(
-          async ({ id, origin }) =>
-            (
-              await fetch(`${origin}/api/servers/${id}/remote-environments`, {
-                credentials: "include",
-              })
-            ).json(),
-          { id: serverId, origin: harness.apiOrigin },
+    await page.waitForTimeout(1_100);
+    const offlineProject = await page.evaluate(
+      async ({ channelId, origin, serverId }) => {
+        const projectsResponse = await fetch(
+          `${origin}/api/servers/${serverId}/projects`,
+          { credentials: "include" },
         );
-        return environments.find(
-          (environment: { id: string; status: string }) =>
-            environment.id === pairing.id,
-        )?.status;
-      })
-      .toBe("offline");
-
-    const offlineMessage = await page.evaluate(
-      async ({ channelId, id, origin }) => {
-        const response = await fetch(
-          `${origin}/api/servers/${id}/channels/${channelId}/messages`,
+        const messageResponse = await fetch(
+          `${origin}/api/servers/${serverId}/channels/${channelId}/messages`,
           {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ content: "Chat survives Host downtime" }),
+            body: JSON.stringify({
+              content: "Chat remains available while the Computer is Offline",
+            }),
           },
         );
-        return { status: response.status, body: await response.json() };
+        return {
+          projects: await projectsResponse.json(),
+          messageStatus: messageResponse.status,
+        };
       },
       {
-        channelId: projectChannel.body.id,
-        id: serverId,
+        channelId: channel.id,
         origin: harness.apiOrigin,
+        serverId,
       },
     );
-    expect(offlineMessage).toEqual({
-      status: 201,
-      body: expect.objectContaining({
-        channelId: projectChannel.body.id,
-        content: "Chat survives Host downtime",
+    expect(offlineProject.messageStatus).toBe(201);
+    expect(offlineProject.projects).toEqual([
+      expect.objectContaining({
+        id: firstProject.id,
+        computerStatus: "offline",
+        channels: [expect.objectContaining({ name: "implementation" })],
       }),
-    });
-    await page
-      .getByLabel("Message #design")
-      .fill("Desktop chat also survives Host downtime");
-    await page.getByRole("button", { name: "Send" }).click();
-    await expect(
-      page.locator("[data-message-id]", {
-        hasText: "Desktop chat also survives Host downtime",
-      }),
-    ).toBeVisible();
-
-    const projectsWithChannel = await page.evaluate(
-      async ({ id, origin }) =>
-        (
-          await fetch(`${origin}/api/servers/${id}/projects`, {
-            credentials: "include",
-          })
-        ).json(),
-      { id: serverId, origin: harness.apiOrigin },
-    );
-    expect(projectsWithChannel[0].channels).toEqual([projectChannel.body]);
+    ]);
   } finally {
-    await stopHost(host);
     await rm(directory, { recursive: true, force: true });
   }
 });

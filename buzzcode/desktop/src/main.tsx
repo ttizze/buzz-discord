@@ -6,6 +6,7 @@ import {
   acceptInvitation,
   type Channel,
   type ChannelMessage,
+  type Computer,
   completeDesktopLogin,
   createChannel,
   createChannelMessage,
@@ -18,22 +19,20 @@ import {
   deleteServer,
   editChannelMessage,
   getChannelMessage,
-  type HostRepository,
   listAudit,
   listChannelMessages,
   listChannels,
-  listHostRepositories,
+  listComputers,
   listMembers,
   listProjects,
-  listRemoteEnvironments,
   listServers,
   loginUrl,
   logout,
   type MentionInput,
-  type RemoteEnvironment,
   readAuthSession,
   readDurableState,
-  revokeRemoteEnvironment,
+  registerComputer,
+  revokeComputer,
   type Server,
   type ServerMember,
   type ServerProject,
@@ -47,6 +46,7 @@ import {
   updateMemberRole,
   writeDurableState,
 } from "./api";
+import { chooseProjectFolder, currentComputerIdentity } from "./computer";
 import { DirectMessagesPanel } from "./DirectMessagesPanel";
 import "./styles.css";
 import { useModalDialog } from "./useModalDialog";
@@ -194,11 +194,8 @@ function AuthenticatedApp({
     readonly string[]
   >([]);
   const [projectName, setProjectName] = useState("");
-  const [projectEnvironmentId, setProjectEnvironmentId] = useState("");
-  const [projectRepositories, setProjectRepositories] = useState<
-    readonly HostRepository[]
-  >([]);
-  const [projectRepositoryPath, setProjectRepositoryPath] = useState("");
+  const [projectFolderPath, setProjectFolderPath] = useState("");
+  const [currentComputer, setCurrentComputer] = useState<Computer | null>(null);
   const [channelProject, setChannelProject] = useState<ServerProject | null>(
     null,
   );
@@ -221,15 +218,13 @@ function AuthenticatedApp({
   const [connected, setConnected] = useState(false);
   const [members, setMembers] = useState<readonly ServerMember[]>([]);
   const [audit, setAudit] = useState<readonly AuditEntry[]>([]);
-  const [remoteEnvironments, setRemoteEnvironments] = useState<
-    readonly RemoteEnvironment[]
-  >([]);
+  const [computers, setComputers] = useState<readonly Computer[]>([]);
   const [hostPairingCode, setHostPairingCode] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [createdInvite, setCreatedInvite] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
-  const environmentRequestVersion = useRef(0);
+  const computerRequestVersion = useRef(0);
   const messageChannelId = useRef<string | null>(null);
   const navigationToggle = useRef<HTMLButtonElement | null>(null);
   const navigationDrawer = useRef<HTMLElement | null>(null);
@@ -338,13 +333,38 @@ function AuthenticatedApp({
     setAudit(loadedAudit);
   }, []);
 
-  const reloadRemoteEnvironments = useCallback(async (serverId: string) => {
-    const requestVersion = ++environmentRequestVersion.current;
-    const loaded = await listRemoteEnvironments(serverId);
-    if (requestVersion === environmentRequestVersion.current) {
-      setRemoteEnvironments(loaded);
+  const reloadComputers = useCallback(async () => {
+    const requestVersion = ++computerRequestVersion.current;
+    const loaded = await listComputers();
+    if (requestVersion === computerRequestVersion.current) {
+      setComputers(loaded);
     }
   }, []);
+
+  useEffect(() => {
+    let current = true;
+    let heartbeat: number | undefined;
+    void currentComputerIdentity().then(async (identity) => {
+      const touch = async () => {
+        const computer = await registerComputer(
+          identity.installationId,
+          identity.name,
+        );
+        if (!current) return;
+        setCurrentComputer(computer);
+        void reloadComputers();
+      };
+      await touch().catch(() => setCurrentComputer(null));
+      heartbeat = window.setInterval(
+        () => void touch().catch(() => setCurrentComputer(null)),
+        30_000,
+      );
+    });
+    return () => {
+      current = false;
+      if (heartbeat !== undefined) window.clearInterval(heartbeat);
+    };
+  }, [reloadComputers]);
 
   const reloadChannels = useCallback(async (serverId: string) => {
     const [loaded, loadedProjects] = await Promise.all([
@@ -457,7 +477,6 @@ function AuthenticatedApp({
     setEditingMessageId(null);
     setEditMentions([]);
     void reloadManagement(activeServer.id);
-    void reloadRemoteEnvironments(activeServer.id);
     void reloadChannels(activeServer.id);
     void readDurableState(activeServer.id).then((state) => {
       if (!current) return;
@@ -480,8 +499,6 @@ function AuthenticatedApp({
         } else if (event.type === "channelAccessChanged") {
           void reloadChannels(activeServer.id);
           void reloadManagement(activeServer.id);
-        } else if (event.type === "remoteEnvironmentsChanged") {
-          void reloadRemoteEnvironments(activeServer.id);
         } else if (event.type === "projectsChanged") {
           void reloadChannels(activeServer.id);
         } else if (event.type === "channelCreated") {
@@ -531,7 +548,6 @@ function AuthenticatedApp({
     reloadChannels,
     reloadManagement,
     reloadMessages,
-    reloadRemoteEnvironments,
     reloadServers,
     refreshMessage,
   ]);
@@ -598,7 +614,7 @@ function AuthenticatedApp({
   function selectServer(server: Server) {
     if (activeServer?.id !== server.id) {
       managementRequestVersion.current += 1;
-      environmentRequestVersion.current += 1;
+      computerRequestVersion.current += 1;
       messageChannelId.current = null;
       setChannels(null);
       setProjects([]);
@@ -607,7 +623,6 @@ function AuthenticatedApp({
       setNextBefore(undefined);
       setMembers([]);
       setAudit([]);
-      setRemoteEnvironments([]);
       setHostPairingCode("");
       setDurableValue("Loading…");
       setDraft("");
@@ -618,9 +633,7 @@ function AuthenticatedApp({
       setEditingMessageId(null);
       setChannelAccessMembers([]);
       setProjectName("");
-      setProjectEnvironmentId("");
-      setProjectRepositories([]);
-      setProjectRepositoryPath("");
+      setProjectFolderPath("");
       setChannelProject(null);
       setProjectChannelName("");
     }
@@ -655,29 +668,22 @@ function AuthenticatedApp({
     channelDialog.close();
   }
 
-  async function chooseProjectEnvironment(environmentId: string) {
-    setProjectEnvironmentId(environmentId);
-    setProjectRepositoryPath("");
-    setProjectRepositories([]);
-    if (activeServer === null || environmentId === "") return;
-    setProjectRepositories(
-      await listHostRepositories(activeServer.id, environmentId),
-    );
+  async function selectProjectFolder() {
+    const folderPath = await chooseProjectFolder();
+    if (folderPath !== null) setProjectFolderPath(folderPath);
   }
 
   async function addProject() {
-    if (activeServer === null) return;
+    if (activeServer === null || currentComputer === null) return;
     const project = await createProject(
       activeServer.id,
       projectName,
-      projectEnvironmentId,
-      projectRepositoryPath,
+      currentComputer.id,
+      projectFolderPath,
     );
     setProjects((current) => [...current, project]);
     setProjectName("");
-    setProjectEnvironmentId("");
-    setProjectRepositories([]);
-    setProjectRepositoryPath("");
+    setProjectFolderPath("");
     projectDialog.close();
   }
 
@@ -806,15 +812,14 @@ function AuthenticatedApp({
   }
 
   async function createPairingCode() {
-    if (activeServer === null) return;
-    const pairing = await createHostPairingCode(activeServer.id);
+    const pairing = await createHostPairingCode();
     setHostPairingCode(pairing.code);
   }
 
-  async function revokeEnvironment(environment: RemoteEnvironment) {
-    if (activeServer === null) return;
-    await revokeRemoteEnvironment(activeServer.id, environment.id);
-    await reloadRemoteEnvironments(activeServer.id);
+  async function revokeSelectedComputer(computer: Computer) {
+    await revokeComputer(computer.id);
+    if (currentComputer?.id === computer.id) setCurrentComputer(null);
+    await reloadComputers();
   }
 
   async function joinServer() {
@@ -922,6 +927,7 @@ function AuthenticatedApp({
           aria-label="Add or join a Server"
           onClick={(event) => {
             setActiveArea("server");
+            void reloadComputers();
             settingsDialog.open(event.currentTarget);
             window.setTimeout(
               () =>
@@ -969,7 +975,10 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Server Settings"
-                  onClick={(event) => settingsDialog.open(event.currentTarget)}
+                  onClick={(event) => {
+                    void reloadComputers();
+                    settingsDialog.open(event.currentTarget);
+                  }}
                 >
                   ⚙
                 </button>
@@ -1011,16 +1020,9 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Add Project"
-                  disabled={
-                    !remoteEnvironments.some(
-                      (environment) => environment.status === "online",
-                    )
-                  }
                   onClick={(event) => {
                     setProjectName("");
-                    setProjectEnvironmentId("");
-                    setProjectRepositories([]);
-                    setProjectRepositoryPath("");
+                    setProjectFolderPath("");
                     projectDialog.open(event.currentTarget);
                   }}
                 >
@@ -1032,7 +1034,15 @@ function AuthenticatedApp({
               {projects.map((project) => (
                 <section className="project-category" key={project.id}>
                   <div className="project-category-heading">
-                    <h4>{project.name}</h4>
+                    <div>
+                      <h4>{project.name}</h4>
+                      <span
+                        className={`project-computer-status ${project.computerStatus}`}
+                        data-testid={`project-computer-status-${project.id}`}
+                      >
+                        {project.computerName} · {project.computerStatus}
+                      </span>
+                    </div>
                     {(activeServer.role === "owner" ||
                       activeServer.role === "admin") && (
                       <button
@@ -1521,45 +1531,24 @@ function AuthenticatedApp({
                   maxLength={100}
                   onChange={(event) => setProjectName(event.target.value)}
                 />
-                <label htmlFor="project-environment">Remote Environment</label>
-                <select
-                  id="project-environment"
-                  value={projectEnvironmentId}
-                  onChange={(event) =>
-                    void chooseProjectEnvironment(event.target.value)
-                  }
+                <span>Project Folder</span>
+                <button
+                  type="button"
+                  onClick={() => void selectProjectFolder()}
                 >
-                  <option value="">Select an Online Remote Environment</option>
-                  {remoteEnvironments
-                    .filter((environment) => environment.status === "online")
-                    .map((environment) => (
-                      <option key={environment.id} value={environment.id}>
-                        {environment.name}
-                      </option>
-                    ))}
-                </select>
-                <label htmlFor="project-repository">Git repository</label>
-                <select
-                  id="project-repository"
-                  value={projectRepositoryPath}
-                  disabled={projectEnvironmentId === ""}
-                  onChange={(event) =>
-                    setProjectRepositoryPath(event.target.value)
-                  }
-                >
-                  <option value="">Select a Git repository</option>
-                  {projectRepositories.map((repository) => (
-                    <option key={repository.path} value={repository.path}>
-                      {repository.name}
-                    </option>
-                  ))}
-                </select>
+                  Choose Project Folder
+                </button>
+                {projectFolderPath !== "" && (
+                  <output data-testid="selected-project-folder">
+                    {projectFolderPath}
+                  </output>
+                )}
                 <button
                   type="button"
                   disabled={
                     projectName.trim() === "" ||
-                    projectEnvironmentId === "" ||
-                    projectRepositoryPath === ""
+                    projectFolderPath === "" ||
+                    currentComputer === null
                   }
                   onClick={() => void addProject()}
                 >
@@ -1785,54 +1774,47 @@ function AuthenticatedApp({
                     ))}
                   </ul>
                 </section>
-                <section aria-labelledby="remote-environments-heading">
-                  <h3 id="remote-environments-heading">Remote Environments</h3>
-                  {(activeServer.role === "owner" ||
-                    activeServer.role === "admin") && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void createPairingCode()}
-                      >
-                        Create pairing code
-                      </button>
-                      {hostPairingCode !== "" && (
-                        <output data-testid="host-pairing-code">
-                          {hostPairingCode}
-                        </output>
-                      )}
-                    </>
+                <section aria-labelledby="computers-heading">
+                  <h3 id="computers-heading">Computers</h3>
+                  <button
+                    type="button"
+                    onClick={() => void createPairingCode()}
+                  >
+                    Create pairing code
+                  </button>
+                  {hostPairingCode !== "" && (
+                    <output data-testid="host-pairing-code">
+                      {hostPairingCode}
+                    </output>
                   )}
                   <ul
                     className="remote-environment-list"
-                    data-testid="remote-environment-list"
+                    data-testid="computer-list"
                   >
-                    {remoteEnvironments.map((environment) => (
+                    {computers.map((computer) => (
                       <li
-                        key={environment.id}
-                        data-testid={`remote-environment-${environment.id}`}
+                        key={computer.id}
+                        data-testid={`computer-${computer.id}`}
                       >
-                        <span>{environment.name}</span>
-                        <strong className={`host-status ${environment.status}`}>
-                          {environment.status === "reconnecting"
+                        <span>{computer.name}</span>
+                        <strong className={`host-status ${computer.status}`}>
+                          {computer.status === "reconnecting"
                             ? "Reconnecting"
-                            : environment.status[0].toUpperCase() +
-                              environment.status.slice(1)}
+                            : computer.status[0].toUpperCase() +
+                              computer.status.slice(1)}
                         </strong>
-                        {(activeServer.role === "owner" ||
-                          activeServer.role === "admin") &&
-                          environment.status !== "revoked" && (
-                            <button
-                              type="button"
-                              className="danger"
-                              aria-label={`Revoke ${environment.name}`}
-                              onClick={() =>
-                                void revokeEnvironment(environment)
-                              }
-                            >
-                              Revoke
-                            </button>
-                          )}
+                        {computer.status !== "revoked" && (
+                          <button
+                            type="button"
+                            className="danger"
+                            aria-label={`Revoke ${computer.name}`}
+                            onClick={() =>
+                              void revokeSelectedComputer(computer)
+                            }
+                          >
+                            Revoke
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>

@@ -97,6 +97,7 @@ pub(crate) struct AppState {
     host_presence: Arc<RwLock<HashMap<String, hosts::HostPresence>>>,
     host_revocations: broadcast::Sender<String>,
     host_reconnect_grace: Duration,
+    computer_online_timeout: Duration,
     oidc: CoreClient<
         EndpointSet,
         EndpointNotSet,
@@ -153,10 +154,6 @@ pub(crate) enum ServerEvent {
         #[serde(rename = "messageId")]
         message_id: String,
     },
-    RemoteEnvironmentsChanged {
-        #[serde(skip)]
-        server_id: String,
-    },
     ProjectsChanged {
         #[serde(skip)]
         server_id: String,
@@ -173,7 +170,6 @@ impl ServerEvent {
             | Self::ChannelAccessChanged { server_id }
             | Self::MessageCreated { server_id, .. }
             | Self::MessageChanged { server_id, .. }
-            | Self::RemoteEnvironmentsChanged { server_id }
             | Self::ProjectsChanged { server_id } => server_id,
         }
     }
@@ -643,6 +639,10 @@ pub async fn serve(
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map_or(Duration::from_secs(15), Duration::from_millis);
+    let computer_online_timeout = env::var("BUZZCODE_COMPUTER_ONLINE_TTL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(Duration::from_secs(90), Duration::from_millis);
     let state = Arc::new(AppState {
         pool,
         changes,
@@ -650,6 +650,7 @@ pub async fn serve(
         host_presence: Arc::new(RwLock::new(HashMap::new())),
         host_revocations,
         host_reconnect_grace,
+        computer_online_timeout,
         oidc,
         http,
         auth,

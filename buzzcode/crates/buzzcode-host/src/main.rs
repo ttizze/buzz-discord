@@ -1,9 +1,7 @@
 use std::{
-    collections::HashSet,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -20,8 +18,8 @@ use url::Url;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HostState {
-    remote_environment_id: String,
-    server_id: String,
+    #[serde(alias = "remoteEnvironmentId")]
+    computer_id: String,
     api_origin: String,
     credential: String,
     installation_id: String,
@@ -31,8 +29,7 @@ struct HostState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PairResponse {
-    id: String,
-    server_id: String,
+    computer_id: String,
     credential: String,
 }
 
@@ -44,16 +41,10 @@ struct PairRequest<'a> {
     name: &'a str,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct HostRepository {
-    name: String,
-    path: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-enum HostMessage<'a> {
-    Ready { repositories: &'a [HostRepository] },
+enum HostMessage {
+    Ready,
 }
 
 #[tokio::main]
@@ -75,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn usage() -> &'static str {
-    "usage: buzzcode-host pair --api-origin URL --pairing-code CODE --name NAME --state PATH\n       buzzcode-host run --state PATH [--repository PATH ...]"
+    "usage: buzzcode-host pair --api-origin URL --pairing-code CODE --name NAME --state PATH\n       buzzcode-host run --state PATH"
 }
 
 fn option(arguments: &[String], name: &str) -> anyhow::Result<String> {
@@ -108,18 +99,11 @@ fn parse_pair_arguments(arguments: &[String]) -> anyhow::Result<PairArguments> {
 
 struct RunArguments {
     state_path: PathBuf,
-    repository_paths: Vec<PathBuf>,
 }
 
 fn parse_run_arguments(arguments: &[String]) -> anyhow::Result<RunArguments> {
-    let repository_paths = arguments
-        .windows(2)
-        .filter(|pair| pair[0] == "--repository")
-        .map(|pair| PathBuf::from(&pair[1]))
-        .collect();
     Ok(RunArguments {
         state_path: option(arguments, "--state")?.into(),
-        repository_paths,
     })
 }
 
@@ -151,15 +135,14 @@ async fn pair(arguments: PairArguments) -> anyhow::Result<()> {
         .await
         .context("pairing response was invalid")?;
     let state = HostState {
-        remote_environment_id: response.id,
-        server_id: response.server_id,
+        computer_id: response.computer_id,
         api_origin: arguments.api_origin,
         credential: response.credential,
         installation_id,
         name: arguments.name,
     };
     write_private_state(&arguments.state_path, &state)?;
-    println!("paired {}", state.remote_environment_id);
+    println!("paired {}", state.computer_id);
     Ok(())
 }
 
@@ -188,9 +171,8 @@ async fn run(arguments: RunArguments) -> anyhow::Result<()> {
     let contents = std::fs::read(&arguments.state_path)
         .with_context(|| format!("failed to read {}", arguments.state_path.display()))?;
     let state: HostState = serde_json::from_slice(&contents).context("Host state is invalid")?;
-    let repositories = discover_repositories(&arguments.repository_paths);
     loop {
-        match connect(&state, &repositories).await {
+        match connect(&state).await {
             Ok(ConnectionEnd::Revoked) => {
                 tracing::warn!("Host access was revoked");
                 return Ok(());
@@ -204,49 +186,12 @@ async fn run(arguments: RunArguments) -> anyhow::Result<()> {
     }
 }
 
-fn discover_repositories(paths: &[PathBuf]) -> Vec<HostRepository> {
-    let mut seen = HashSet::new();
-    paths
-        .iter()
-        .filter_map(|path| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(path)
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .ok()?;
-            if !output.status.success() {
-                tracing::warn!(path = %path.display(), "ignoring a non-Git repository path");
-                return None;
-            }
-            let root = String::from_utf8(output.stdout).ok()?;
-            let root = root.trim();
-            let canonical = std::fs::canonicalize(root).ok()?;
-            let canonical = canonical.to_string_lossy().into_owned();
-            if !seen.insert(canonical.clone()) {
-                return None;
-            }
-            let name = Path::new(&canonical)
-                .file_name()
-                .and_then(|value| value.to_str())?
-                .to_owned();
-            Some(HostRepository {
-                name,
-                path: canonical,
-            })
-        })
-        .collect()
-}
-
 enum ConnectionEnd {
     Disconnected,
     Revoked,
 }
 
-async fn connect(
-    state: &HostState,
-    repositories: &[HostRepository],
-) -> anyhow::Result<ConnectionEnd> {
+async fn connect(state: &HostState) -> anyhow::Result<ConnectionEnd> {
     let mut url = Url::parse(&state.api_origin).context("apiOrigin is invalid")?;
     url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
         .map_err(|_| anyhow::anyhow!("apiOrigin scheme cannot be used for WebSocket"))?;
@@ -260,10 +205,10 @@ async fn connect(
     let (mut socket, _) = connect_async(request).await?;
     socket
         .send(Message::Text(
-            serde_json::to_string(&HostMessage::Ready { repositories })?.into(),
+            serde_json::to_string(&HostMessage::Ready)?.into(),
         ))
         .await?;
-    tracing::info!(environment_id = %state.remote_environment_id, "Host connected");
+    tracing::info!(computer_id = %state.computer_id, "Host connected");
     while let Some(message) = socket.next().await {
         if let Message::Close(frame) = message? {
             return Ok(if frame.is_some_and(|frame| frame.reason == "revoked") {
