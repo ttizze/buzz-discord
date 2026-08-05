@@ -17,7 +17,7 @@ An optional, non-unique presentation name for one member inside one server. It i
 _Avoid_: Display Name, Handle, role
 
 **Server**:
-An isolated collaboration space containing its own channels, members, and projects. A user may belong to and switch between multiple servers, and a server remains usable for chat without a connected remote environment.
+An isolated collaboration space containing its own channels, members, and projects. A user may belong to and switch between multiple servers, and a server remains usable for chat without an Online Computer.
 _Avoid_: Workspace, community, tenant
 
 **Member**:
@@ -29,23 +29,23 @@ The single member responsible for a server, including deleting the server and tr
 _Avoid_: Admin
 
 **Admin**:
-A member permitted to manage server members, channels, projects, remote environments, and agent settings, but not server deletion or ownership transfer.
+A member permitted to manage server members, channels, projects, Computers, and agent settings, but not server deletion or ownership transfer.
 _Avoid_: Owner, moderator
 
 **Member Role**:
-The standard server role, permitted to read and post in open areas, use private channels and projects to which the member was added, and invoke remote agents in accessible project channels without managing server configuration.
+The standard server role, permitted to read and post in open areas, use private channels and projects to which the member was added, and invoke available agents in accessible project channels without managing server configuration.
 _Avoid_: Custom role, guest
 
 **Project**:
-A named work context whose organization depends on its scope. A personal project supplies context to an agent direct message, while a server project groups channels; neither owns an agent or stores messages itself.
+A named work context bound to one Computer and one Project Folder on that Computer. A Personal Project supplies context to an Agent Direct Message, while a Server Project groups Channels; neither owns an Agent or stores Messages itself.
 _Avoid_: Workspace, channel, repository, conversation
 
 **Personal Project**:
-A project owned by one user that connects the user's local folder to a local agent and is selectable as work context in a direct message with that agent. It contains no channels and cannot be attached to a human direct message.
+A Project visible only to its owner, added from a folder local to the Computer where the user creates it and selectable as work context in a Direct Message with an Agent. It contains no Channels and cannot be attached to a human Direct Message.
 _Avoid_: Private server project
 
 **Server Project**:
-A project belonging to one server that groups channels and selects one Remote Environment plus a Git repository on that VPS. Creating one requires an Online Buzzcode Host and a valid repository; if its Host goes Offline, its channels remain writable while remote agents become unavailable. It never connects to a member's local computer and does not isolate its repository from other agents on the same VPS.
+A Project shared through one Server and added from a folder local to the Computer where it is created. Other permitted Members can see it and its Channels from any Computer, while file access and Agent execution route to its bound Computer; if that Computer is Offline, its Channels remain writable while its files and Agents are unavailable.
 _Avoid_: Personal project
 
 **Open Project**:
@@ -53,20 +53,24 @@ A server project available to every server member. All channels inside it share 
 _Avoid_: Public channel category
 
 **Private Project**:
-A server project whose channels and searchable conversation history are available only to explicitly added members and server administrators. Its privacy is enforced by Buzzcode, not by filesystem isolation from other agents or the VPS administrator.
+A Server Project whose Channels and searchable conversation history are available only to explicitly added Members and Server administrators. Its privacy is enforced by Buzzcode, not by filesystem isolation from other Agents or the bound Computer's owner.
 _Avoid_: Sandbox, separate server
 
 **Archived Project**:
-A former server project whose remote execution and agents are disconnected and whose channels are read-only but remain searchable. Archiving it does not disconnect its Remote Environment from other projects. A server project with message history is archived rather than deleted.
+An inactive Server Project whose Computer execution and Agents are disconnected and whose Channels are read-only but remain searchable. Archiving it does not disconnect its Computer from other Projects, and a Server Project with Message history is archived rather than deleted.
 _Avoid_: Deleted project, inactive host
 
-**Remote Environment**:
-One admin-provided VPS registered to exactly one server and represented by one Buzzcode Host. A server may have multiple remote environments, and each server project selects exactly one of them. One remote environment may serve multiple projects; their folders are working contexts rather than security boundaries.
-_Avoid_: Member computer, local environment
+**Computer**:
+A user's computer or a VPS running a Buzzcode Host. A Project is implicitly bound to the Computer on which its folder is added; users do not select another Computer while creating it, one Computer may back Projects in multiple Servers, and a VPS is not a separate Project concept.
+_Avoid_: Remote Environment, execution target, host
+
+**Project Folder**:
+The folder selected from the local filesystem of the Computer where a Project is added. It supplies the Project's starting work context, may be inside or outside a Git repository, and is not a filesystem sandbox for Agents running with that Computer user's permissions.
+_Avoid_: Repository, workspace, folder allowlist
 
 **Buzzcode Host**:
-The `buzzcode-host` machine-side service that establishes an outbound ACP connection and exposes authorized folders and agent capabilities. The desktop app runs it locally for personal use, while each VPS Host represents one Remote Environment, belongs to exactly one server, and may expose separate folders to multiple projects assigned to that VPS.
-_Avoid_: SSH target, central agent
+The machine-side service that connects one Computer to Buzzcode and performs that Computer's folder browsing and Agent execution. It is infrastructure behind the Computer rather than a Project creation choice, and it does not require a preconfigured Project Folder or repository list.
+_Avoid_: Computer, SSH target, central agent, project location
 
 **ACP Connection**:
 The stable ACP v1 JSON-RPC lifecycle used end to end for agent initialization, sessions, prompts, updates, permissions, and cancellation. Buzzcode carries ACP over an authenticated outbound WebSocket between the service and Buzzcode Host, and the Host bridges it to the agent's standard ACP stdio transport.
@@ -77,11 +81,11 @@ A server message stream created either directly under the server or inside exact
 _Avoid_: Conversation, thread
 
 **Open Channel**:
-A direct server channel available to every server member. It has no project working context, so remote agents cannot be invoked there. Once it contains a message, it cannot become private.
+A direct server Channel available to every Server Member. It has no Project work context, so Agents cannot be invoked there. Once it contains a Message, it cannot become private.
 _Avoid_: Public thread
 
 **Private Channel**:
-A direct server channel available to explicitly added members and server administrators. It has no project working context, so remote agents cannot be invoked there. Once it contains a message, it cannot become open.
+A direct server Channel available to explicitly added Members and Server administrators. It has no Project work context, so Agents cannot be invoked there. Once it contains a Message, it cannot become open.
 _Avoid_: Private project, group direct message
 
 **Direct Message**:
@@ -101,19 +105,19 @@ The user or agent that produced a message. Agent-authored messages also identify
 _Avoid_: Actor
 
 **Local Agent**:
-An agent running on a user's computer for direct messages and personal projects. With explicit per-server delegation, it may search and act across servers within its owner's permissions, but it is never connected to a server project.
-_Avoid_: Remote agent
+An Agent running on the user's current Computer. It may be used by Direct Messages, Personal Projects, and Server Projects whose folders were added from that Computer, subject to the user's and Server's permissions.
+_Avoid_: Central agent
 
 **Remote Agent**:
-A normal agent process running on the Remote Environment selected by a server project, with shell, file, and browser capabilities available on that VPS. A project folder supplies its starting context but does not prevent access to other resources on the same VPS; it has no implicit access to another Remote Environment.
-_Avoid_: Local agent
+An Agent reached through a Project's bound Computer when that Computer is not the user's current Computer, including an Agent running on a VPS or another permitted Computer. It has that Computer user's shell, file, and browser capabilities; the Project Folder is its starting context rather than a sandbox.
+_Avoid_: VPS agent, server-owned agent
 
 **Agent Mention**:
-A project-channel message that names a remote agent and starts a request. A direct reply to an agent-authored message continues with that agent without another mention, while ordinary channel messages never trigger an agent. The parent project determines the starting folder and conversation scope.
+A Project Channel Message that names an Agent available on the Project's bound Computer and starts a request. A direct Reply to an Agent-authored Message continues with that Agent without another mention, while ordinary Channel Messages never trigger an Agent; the parent Project determines the Computer, starting folder, and conversation scope.
 _Avoid_: Channel-agent binding
 
 **Agent Run**:
-An independently tracked execution started by an agent mention and continued by direct replies to that agent's output. Each server-project run receives its own Git branch and worktree so runs may execute in parallel, and records status, cancellation, output destination, requester, and audit history without creating a visible conversation or thread.
+An independently tracked execution started by an Agent Mention and continued by direct Replies to that Agent's output. It follows the selected Agent's normal folder and Git behavior, including worktrees when supported and applicable, and records status, cancellation, output destination, requester, and audit history without creating a visible Conversation or Thread.
 _Avoid_: Conversation, thread, channel
 
 **Project Knowledge**:
