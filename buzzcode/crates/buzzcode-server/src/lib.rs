@@ -249,6 +249,7 @@ struct TransferOwnership {
 struct MemberSummary {
     subject: String,
     email: String,
+    handle: String,
     display_name: String,
     role: String,
 }
@@ -1264,12 +1265,12 @@ async fn list_members(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let members = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT users.oidc_subject, users.email, users.display_name, 'owner' AS role \
+    let members = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT users.oidc_subject, users.email, users.handle, users.display_name, 'owner' AS role \
          FROM servers JOIN users ON users.oidc_subject = servers.owner_subject \
          WHERE servers.id = $1 \
          UNION ALL \
-         SELECT users.oidc_subject, users.email, users.display_name, server_members.role \
+         SELECT users.oidc_subject, users.email, users.handle, users.display_name, server_members.role \
          FROM server_members JOIN users ON users.oidc_subject = server_members.oidc_subject \
          WHERE server_members.server_id = $1 \
          ORDER BY role DESC, display_name",
@@ -1278,9 +1279,10 @@ async fn list_members(
     .fetch_all(&state.pool)
     .await?
     .into_iter()
-    .map(|(subject, email, display_name, role)| MemberSummary {
+    .map(|(subject, email, handle, display_name, role)| MemberSummary {
         subject,
         email,
+        handle,
         display_name,
         role,
     })
@@ -1301,10 +1303,11 @@ async fn update_member_role(
         return Err(ApiError::InvalidRequest);
     }
     let mut transaction = state.pool.begin().await?;
-    let member = sqlx::query_as::<_, (String, String)>(
+    let member = sqlx::query_as::<_, (String, String, String)>(
         "UPDATE server_members SET role = $3 \
          WHERE server_id = $1 AND oidc_subject = $2 \
          RETURNING (SELECT email FROM users WHERE oidc_subject = $2), \
+         (SELECT handle FROM users WHERE oidc_subject = $2), \
          (SELECT display_name FROM users WHERE oidc_subject = $2)",
     )
     .bind(&server_id)
@@ -1331,7 +1334,8 @@ async fn update_member_role(
     Ok(Json(MemberSummary {
         subject: member_subject,
         email: member.0,
-        display_name: member.1,
+        handle: member.1,
+        display_name: member.2,
         role: input.role,
     }))
 }

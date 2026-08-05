@@ -69,7 +69,7 @@ function ChannelMemberPicker({
                 )
               }
             />
-            Allow {member.email}
+            Allow {member.displayName} @{member.handle}
           </label>
         ))}
     </fieldset>
@@ -139,6 +139,13 @@ function AuthenticatedApp({
 }: {
   session: AuthSession & { authenticated: true };
 }) {
+  const [activeArea, setActiveArea] = useState<"home" | "server">("server");
+  const [membersOpen, setMembersOpen] = useState(
+    () => window.matchMedia("(min-width: 75.0625rem)").matches,
+  );
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [channelDialogOpen, setChannelDialogOpen] = useState(false);
   const [servers, setServers] = useState<readonly Server[] | null>(null);
   const [activeServer, setActiveServer] = useState<Server | null>(null);
   const [serverName, setServerName] = useState("");
@@ -176,6 +183,61 @@ function AuthenticatedApp({
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
   const messageChannelId = useRef<string | null>(null);
+  const settingsTrigger = useRef<HTMLButtonElement | null>(null);
+  const settingsCloseButton = useRef<HTMLButtonElement | null>(null);
+  const channelDialogTrigger = useRef<HTMLButtonElement | null>(null);
+  const channelDialogCloseButton = useRef<HTMLButtonElement | null>(null);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    window.requestAnimationFrame(() => settingsTrigger.current?.focus());
+  }, []);
+
+  const openSettings = useCallback((trigger: HTMLButtonElement) => {
+    settingsTrigger.current = trigger;
+    setSettingsOpen(true);
+  }, []);
+
+  const closeChannelDialog = useCallback(() => {
+    setChannelDialogOpen(false);
+    window.requestAnimationFrame(() => channelDialogTrigger.current?.focus());
+  }, []);
+
+  const openChannelDialog = useCallback((trigger: HTMLButtonElement) => {
+    channelDialogTrigger.current = trigger;
+    setChannelDialogOpen(true);
+  }, []);
+
+  useEffect(() => {
+    const wideLayout = window.matchMedia("(min-width: 75.0625rem)");
+    const syncMemberPanel = () => setMembersOpen(wideLayout.matches);
+    wideLayout.addEventListener("change", syncMemberPanel);
+    return () => wideLayout.removeEventListener("change", syncMemberPanel);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    settingsCloseButton.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeSettings();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeSettings, settingsOpen]);
+
+  useEffect(() => {
+    if (!channelDialogOpen) return;
+    channelDialogCloseButton.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeChannelDialog();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [channelDialogOpen, closeChannelDialog]);
 
   const mergeMessages = useCallback(
     (
@@ -447,6 +509,7 @@ function AuthenticatedApp({
     setChannelName("");
     setChannelVisibility("open");
     setNewChannelMembers([]);
+    setChannelDialogOpen(false);
   }
 
   async function saveChannelAccess() {
@@ -619,35 +682,104 @@ function AuthenticatedApp({
   }
 
   return (
-    <main className="shell">
-      <section className="card">
-        <p className="eyebrow">Independent application vertical</p>
-        <h1>Buzzcode</h1>
-        <h2 data-testid="active-server-name">{activeServer.name}</h2>
-        <p data-testid="active-member-role">
-          {activeServer.role === "owner"
-            ? "Owner"
-            : activeServer.role === "admin"
-              ? "Admin"
-              : "Member"}
-        </p>
+    <main className="app-shell">
+      <aside className="server-rail" data-testid="server-rail">
+        <button
+          className="server-rail-home"
+          type="button"
+          aria-label="Home"
+          aria-current={activeArea === "home"}
+          onClick={() => setActiveArea("home")}
+        >
+          <span aria-hidden="true">B</span>
+        </button>
+        <div className="server-rail-divider" />
         <nav aria-label="Servers">
           {servers.map((server) => (
             <button
+              className="server-rail-server"
               key={server.id}
               type="button"
+              aria-label={server.name}
+              aria-current={
+                activeArea === "server" && activeServer.id === server.id
+              }
               data-server-id={server.id}
-              onClick={() => setActiveServer(server)}
+              onClick={() => {
+                setActiveServer(server);
+                setActiveArea("server");
+              }}
             >
-              {server.name}
+              <span aria-hidden="true">{server.name.slice(0, 2)}</span>
             </button>
           ))}
         </nav>
-        <section className="chat-layout" aria-label="Server Channels">
-          <aside className="channel-sidebar">
+        <button
+          className="server-rail-add"
+          type="button"
+          aria-label="Add or join a Server"
+          onClick={(event) => {
+            setActiveArea("server");
+            openSettings(event.currentTarget);
+            window.setTimeout(
+              () =>
+                document
+                  .querySelector<HTMLElement>("#new-server-name")
+                  ?.focus(),
+              0,
+            );
+          }}
+        >
+          <span aria-hidden="true">+</span>
+        </button>
+      </aside>
+      <section
+        className="server-workspace"
+        data-navigation-open={navigationOpen}
+        data-members-open={membersOpen}
+        hidden={activeArea !== "server"}
+      >
+        <section className="chat-layout">
+          <aside className="channel-sidebar" data-testid="context-sidebar">
+            <header className="server-context-header">
+              <div>
+                <h2 data-testid="active-server-name">{activeServer.name}</h2>
+                <p data-testid="active-member-role">
+                  {activeServer.role === "owner"
+                    ? "Owner"
+                    : activeServer.role === "admin"
+                      ? "Admin"
+                      : "Member"}
+                </p>
+              </div>
+              <div className="server-context-actions">
+                <span className="connection-status">
+                  <span className="connection-dot" data-connected={connected} />
+                  <span className="sr-only" data-testid="realtime-status">
+                    {connected ? "Connected" : "Disconnected"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  aria-label="Server Settings"
+                  onClick={(event) => openSettings(event.currentTarget)}
+                >
+                  ⚙
+                </button>
+              </div>
+            </header>
             <div className="section-heading">
               <h3>Channels</h3>
-              <span>{connected ? "Live" : "Connecting"}</span>
+              {(activeServer.role === "owner" ||
+                activeServer.role === "admin") && (
+                <button
+                  type="button"
+                  aria-label="Add Channel"
+                  onClick={(event) => openChannelDialog(event.currentTarget)}
+                >
+                  +
+                </button>
+              )}
             </div>
             <nav aria-label="Channels" className="channel-list">
               {channels?.map((channel) => (
@@ -656,61 +788,82 @@ function AuthenticatedApp({
                   type="button"
                   data-channel-id={channel.id}
                   aria-current={activeChannel?.id === channel.id}
-                  onClick={() => setActiveChannel(channel)}
+                  onClick={() => {
+                    setActiveChannel(channel);
+                    setNavigationOpen(false);
+                  }}
                 >
                   <span aria-hidden="true">#</span> {channel.name}
                 </button>
               ))}
             </nav>
-            {(activeServer.role === "owner" ||
-              activeServer.role === "admin") && (
-              <div className="channel-create">
-                <label htmlFor="channel-name">Channel name</label>
-                <input
-                  id="channel-name"
-                  value={channelName}
-                  maxLength={80}
-                  onChange={(event) => setChannelName(event.target.value)}
-                />
-                <label htmlFor="channel-visibility">Channel visibility</label>
-                <select
-                  id="channel-visibility"
-                  value={channelVisibility}
-                  onChange={(event) =>
-                    setChannelVisibility(
-                      event.target.value as Channel["visibility"],
-                    )
-                  }
-                >
-                  <option value="open">Open</option>
-                  <option value="private">Private</option>
-                </select>
-                {channelVisibility === "private" && (
-                  <ChannelMemberPicker
-                    members={members}
-                    selectedSubjects={newChannelMembers}
-                    onChange={setNewChannelMembers}
-                  />
-                )}
-                <button
-                  type="button"
-                  disabled={channelName.trim() === ""}
-                  onClick={() => void addChannel()}
-                >
-                  Create Channel
-                </button>
-              </div>
-            )}
+            <div className="current-user-panel">
+              <span className="user-avatar" aria-hidden="true">
+                {session.user.displayName.slice(0, 1)}
+              </span>
+              <span>
+                <strong>{session.user.displayName}</strong>
+                <small data-testid="account-handle">
+                  @{session.user.handle}
+                </small>
+              </span>
+              <button
+                type="button"
+                aria-label="Sign out"
+                onClick={() =>
+                  void logout().then(() => window.location.reload())
+                }
+              >
+                ↪
+              </button>
+            </div>
           </aside>
-          <section className="channel-panel">
+          <section
+            className="channel-panel"
+            aria-label="Server Channels"
+            data-testid="content-pane"
+          >
             {activeChannel === null ? (
-              <div className="channel-empty">
-                <h3>No channels yet</h3>
-                <p>Create an Open Channel to start talking with the Server.</p>
-              </div>
+              <>
+                <header className="channel-header">
+                  <button
+                    className="navigation-toggle"
+                    type="button"
+                    aria-label="Toggle Channels"
+                    aria-expanded={navigationOpen}
+                    onClick={() => setNavigationOpen((current) => !current)}
+                  >
+                    ☰
+                  </button>
+                  <h3>No channels yet</h3>
+                  <button
+                    className="members-toggle"
+                    type="button"
+                    aria-label="Toggle Members"
+                    aria-expanded={membersOpen}
+                    onClick={() => setMembersOpen((current) => !current)}
+                  >
+                    Members
+                  </button>
+                </header>
+                <div className="channel-empty">
+                  <p>
+                    Create an Open Channel to start talking with the Server.
+                  </p>
+                </div>
+              </>
             ) : (
               <>
                 <header className="channel-header">
+                  <button
+                    className="navigation-toggle"
+                    type="button"
+                    aria-label="Toggle Channels"
+                    aria-expanded={navigationOpen}
+                    onClick={() => setNavigationOpen((current) => !current)}
+                  >
+                    ☰
+                  </button>
                   <div>
                     <h3 data-testid="active-channel-name">
                       # {activeChannel.name}
@@ -721,6 +874,15 @@ function AuthenticatedApp({
                         : "Private Channel · visible to selected Members and Server managers"}
                     </p>
                   </div>
+                  <button
+                    className="members-toggle"
+                    type="button"
+                    aria-label="Toggle Members"
+                    aria-expanded={membersOpen}
+                    onClick={() => setMembersOpen((current) => !current)}
+                  >
+                    Members
+                  </button>
                   {activeChannel.visibility === "private" &&
                     (activeServer.role === "owner" ||
                       activeServer.role === "admin") && (
@@ -974,81 +1136,19 @@ function AuthenticatedApp({
             )}
           </section>
         </section>
-        <label htmlFor="new-server-name">New Server name</label>
-        <div className="composer">
-          <input
-            id="new-server-name"
-            value={serverName}
-            onChange={(event) => setServerName(event.target.value)}
-          />
-          <button type="button" onClick={() => void addServer()}>
-            Create another Server
-          </button>
-        </div>
-        {joinServerForm}
-        <p data-testid="signed-in-user">{session.user.email}</p>
-        <button
-          type="button"
-          onClick={() => void logout().then(() => window.location.reload())}
+        <aside
+          className="member-sidebar"
+          data-testid="member-sidebar"
+          data-open={membersOpen}
         >
-          Sign out
-        </button>
-        <p className="lede">
-          Durable PostgreSQL state delivered over typed HTTP and WebSocket APIs.
-        </p>
-        <dl className="status-grid">
-          <div>
-            <dt>Realtime</dt>
-            <dd data-testid="realtime-status">
-              {connected ? "Connected" : "Disconnected"}
-            </dd>
-          </div>
-          <div>
-            <dt>Durable value</dt>
-            <dd data-testid="durable-value">{durableValue}</dd>
-          </div>
-        </dl>
-        <label htmlFor="durable-value-input">Durable value</label>
-        <div className="composer">
-          <input
-            id="durable-value-input"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <button type="button" onClick={() => void save()}>
-            Save
-          </button>
-        </div>
-        <section aria-labelledby="members-heading">
-          <h3 id="members-heading">Members</h3>
-          {(activeServer.role === "owner" || activeServer.role === "admin") && (
-            <>
-              <label htmlFor="invite-email">Invite email</label>
-              <div className="composer">
-                <input
-                  id="invite-email"
-                  type="email"
-                  value={inviteEmail}
-                  onChange={(event) => setInviteEmail(event.target.value)}
-                />
-                <button type="button" onClick={() => void inviteMember()}>
-                  Create invitation
-                </button>
-              </div>
-              {createdInvite !== "" && (
-                <output data-testid="invitation-code">{createdInvite}</output>
-              )}
-            </>
-          )}
-          <ul className="member-list">
-            {members.map((member) => (
-              <li key={member.subject} data-member-subject={member.subject}>
-                <span>
-                  {member.displayName} ({member.email})
-                </span>
-                {member.role === "owner" ||
-                (activeServer.role !== "owner" &&
-                  activeServer.role !== "admin") ? (
+          <section aria-labelledby="members-heading">
+            <h3 id="members-heading">Members</h3>
+            <ul className="member-list">
+              {members.map((member) => (
+                <li key={member.subject} data-member-subject={member.subject}>
+                  <span>
+                    {member.displayName} (@{member.handle})
+                  </span>
                   <strong>
                     {member.role === "owner"
                       ? "Owner"
@@ -1056,54 +1156,234 @@ function AuthenticatedApp({
                         ? "Admin"
                         : "Member"}
                   </strong>
-                ) : (
-                  <>
-                    <select
-                      aria-label={`Role for ${member.email}`}
-                      value={member.role}
-                      onChange={(event) =>
-                        void changeRole(
-                          member,
-                          event.target.value as "admin" | "member",
-                        )
-                      }
-                    >
-                      <option value="member">Member</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                    {activeServer.role === "owner" && (
-                      <button
-                        type="button"
-                        onClick={() => void makeOwner(member)}
-                      >
-                        Transfer ownership
-                      </button>
-                    )}
-                  </>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </aside>
+        {channelDialogOpen && (
+          <div className="settings-backdrop">
+            <section
+              className="channel-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-channel-heading"
+            >
+              <header>
+                <div>
+                  <p className="eyebrow">{activeServer.name}</p>
+                  <h2 id="create-channel-heading">Create Channel</h2>
+                </div>
+                <button
+                  ref={channelDialogCloseButton}
+                  type="button"
+                  aria-label="Close Create Channel"
+                  onClick={closeChannelDialog}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="channel-create">
+                <label htmlFor="channel-name">Channel name</label>
+                <input
+                  id="channel-name"
+                  value={channelName}
+                  maxLength={80}
+                  onChange={(event) => setChannelName(event.target.value)}
+                />
+                <label htmlFor="channel-visibility">Channel visibility</label>
+                <select
+                  id="channel-visibility"
+                  value={channelVisibility}
+                  onChange={(event) =>
+                    setChannelVisibility(
+                      event.target.value as Channel["visibility"],
+                    )
+                  }
+                >
+                  <option value="open">Open</option>
+                  <option value="private">Private</option>
+                </select>
+                {channelVisibility === "private" && (
+                  <ChannelMemberPicker
+                    members={members}
+                    selectedSubjects={newChannelMembers}
+                    onChange={setNewChannelMembers}
+                  />
                 )}
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section aria-labelledby="audit-heading">
-          <h3 id="audit-heading">Audit history</h3>
-          <ol data-testid="audit-history">
-            {audit.map((entry) => (
-              <li key={entry.id}>{entry.action}</li>
-            ))}
-          </ol>
-        </section>
-        {activeServer.role === "owner" && (
-          <button
-            className="danger"
-            type="button"
-            onClick={() => void removeActiveServer()}
-          >
-            Delete Server
-          </button>
+                <button
+                  type="button"
+                  disabled={channelName.trim() === ""}
+                  onClick={() => void addChannel()}
+                >
+                  Create Channel
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {settingsOpen && (
+          <div className="settings-backdrop">
+            <section
+              className="server-settings"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="server-settings-heading"
+            >
+              <header>
+                <div>
+                  <p className="eyebrow">{activeServer.name}</p>
+                  <h2 id="server-settings-heading">Server Settings</h2>
+                </div>
+                <button
+                  ref={settingsCloseButton}
+                  type="button"
+                  aria-label="Close Server Settings"
+                  onClick={closeSettings}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="server-settings-content">
+                <section aria-labelledby="server-access-heading">
+                  <h3 id="server-access-heading">Servers</h3>
+                  <label htmlFor="new-server-name">New Server name</label>
+                  <div className="composer">
+                    <input
+                      id="new-server-name"
+                      value={serverName}
+                      onChange={(event) => setServerName(event.target.value)}
+                    />
+                    <button type="button" onClick={() => void addServer()}>
+                      Create another Server
+                    </button>
+                  </div>
+                  {joinServerForm}
+                </section>
+                <section aria-labelledby="server-state-heading">
+                  <h3 id="server-state-heading">Server state</h3>
+                  <dl className="status-grid">
+                    <div>
+                      <dt>Realtime</dt>
+                      <dd>{connected ? "Connected" : "Disconnected"}</dd>
+                    </div>
+                    <div>
+                      <dt>Durable value</dt>
+                      <dd data-testid="durable-value">{durableValue}</dd>
+                    </div>
+                  </dl>
+                  <label htmlFor="durable-value-input">Durable value</label>
+                  <div className="composer">
+                    <input
+                      id="durable-value-input"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                    />
+                    <button type="button" onClick={() => void save()}>
+                      Save
+                    </button>
+                  </div>
+                </section>
+                <section aria-labelledby="manage-members-heading">
+                  <h3 id="manage-members-heading">Manage Members</h3>
+                  {(activeServer.role === "owner" ||
+                    activeServer.role === "admin") && (
+                    <>
+                      <label htmlFor="invite-email">Invite email</label>
+                      <div className="composer">
+                        <input
+                          id="invite-email"
+                          type="email"
+                          value={inviteEmail}
+                          onChange={(event) =>
+                            setInviteEmail(event.target.value)
+                          }
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void inviteMember()}
+                        >
+                          Create invitation
+                        </button>
+                      </div>
+                      {createdInvite !== "" && (
+                        <output data-testid="invitation-code">
+                          {createdInvite}
+                        </output>
+                      )}
+                    </>
+                  )}
+                  <ul className="member-list">
+                    {members.map((member) => (
+                      <li
+                        key={member.subject}
+                        data-member-subject={member.subject}
+                      >
+                        <span>
+                          {member.displayName} (@{member.handle})
+                        </span>
+                        {member.role === "owner" ||
+                        (activeServer.role !== "owner" &&
+                          activeServer.role !== "admin") ? (
+                          <strong>
+                            {member.role === "owner"
+                              ? "Owner"
+                              : member.role === "admin"
+                                ? "Admin"
+                                : "Member"}
+                          </strong>
+                        ) : (
+                          <>
+                            <select
+                              aria-label={`Role for @${member.handle}`}
+                              value={member.role}
+                              onChange={(event) =>
+                                void changeRole(
+                                  member,
+                                  event.target.value as "admin" | "member",
+                                )
+                              }
+                            >
+                              <option value="member">Member</option>
+                              <option value="admin">Admin</option>
+                            </select>
+                            {activeServer.role === "owner" && (
+                              <button
+                                type="button"
+                                onClick={() => void makeOwner(member)}
+                              >
+                                Transfer ownership
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <section aria-labelledby="audit-heading">
+                  <h3 id="audit-heading">Audit history</h3>
+                  <ol data-testid="audit-history">
+                    {audit.map((entry) => (
+                      <li key={entry.id}>{entry.action}</li>
+                    ))}
+                  </ol>
+                </section>
+                {activeServer.role === "owner" && (
+                  <button
+                    className="danger"
+                    type="button"
+                    onClick={() => void removeActiveServer()}
+                  >
+                    Delete Server
+                  </button>
+                )}
+              </div>
+            </section>
+          </div>
         )}
       </section>
-      <DirectMessagesPanel session={session} />
+      <DirectMessagesPanel session={session} hidden={activeArea !== "home"} />
     </main>
   );
 }

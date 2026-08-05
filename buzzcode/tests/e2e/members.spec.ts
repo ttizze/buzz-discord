@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -31,6 +32,7 @@ test("invites members and enforces fixed Server roles", async ({ browser }) => {
     .getAttribute("data-server-id");
   expect(serverId).toBeTruthy();
 
+  await openServerSettings(owner);
   await owner.getByLabel("Invite email").fill("admin@example.com");
   await owner.getByRole("button", { name: "Create invitation" }).click();
   const adminInvitation = await owner
@@ -48,10 +50,13 @@ test("invites members and enforces fixed Server roles", async ({ browser }) => {
   );
   await expect(admin.getByTestId("active-member-role")).toHaveText("Member");
   await expect(admin.getByTestId("realtime-status")).toHaveText("Connected");
-  await expect(owner.getByText("admin (admin@example.com)")).toBeVisible();
+  await expect(
+    owner.getByTestId("member-sidebar").getByText("admin (@admin)"),
+  ).toBeVisible();
 
-  await owner.getByLabel("Role for admin@example.com").selectOption("admin");
+  await owner.getByLabel("Role for @admin").selectOption("admin");
   await expect(admin.getByTestId("active-member-role")).toHaveText("Admin");
+  await openServerSettings(admin);
   await expect(admin.getByLabel("Invite email")).toBeVisible();
 
   await admin.getByLabel("Invite email").fill("member@example.com");
@@ -112,9 +117,9 @@ test("invites members and enforces fixed Server roles", async ({ browser }) => {
   );
   expect(memberInviteStatus).toBe(403);
 
-  await admin.getByLabel("Role for member@example.com").selectOption("admin");
+  await admin.getByLabel("Role for @member").selectOption("admin");
   await expect(member.getByTestId("active-member-role")).toHaveText("Admin");
-  await admin.getByLabel("Role for member@example.com").selectOption("member");
+  await admin.getByLabel("Role for @member").selectOption("member");
   await expect(member.getByTestId("active-member-role")).toHaveText("Member");
 
   const adminTransferStatus = await admin.evaluate(
@@ -151,7 +156,7 @@ test("invites members and enforces fixed Server roles", async ({ browser }) => {
     "member.role_changed",
   );
   await owner
-    .locator("li", { hasText: "admin@example.com" })
+    .locator("li", { hasText: "@admin" })
     .getByRole("button", { name: "Transfer ownership" })
     .click();
   await expect(owner.getByTestId("active-member-role")).toHaveText("Admin");
@@ -161,7 +166,9 @@ test("invites members and enforces fixed Server roles", async ({ browser }) => {
       hasText: "Owner",
     }),
   ).toHaveCount(1);
-  await expect(admin.getByText("owner (owner@example.com)")).toBeVisible();
+  await expect(
+    admin.getByTestId("member-sidebar").getByText("owner (@owner)"),
+  ).toBeVisible();
   await expect(admin.getByTestId("audit-history")).toContainText(
     "ownership.transferred",
   );

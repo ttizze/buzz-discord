@@ -533,3 +533,717 @@ button:disabled {
     border-bottom: 1px solid #2e4162;
   }
 }
+
+/* Discord-shaped application shell. The onboarding and auth cards above keep
+   their focused layout; authenticated workspaces fill the entire window. */
+.app-shell {
+  --rail: #1e1f22;
+  --sidebar: #2b2d31;
+  --surface: #313338;
+  --surface-raised: #383a40;
+  --surface-hover: #35373c;
+  --muted: #949ba4;
+  --text: #f2f3f5;
+  --brand: #5865f2;
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  width: 100vw;
+  height: 100dvh;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.server-rail {
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 0.5rem;
+  overflow-y: auto;
+  background: var(--rail);
+}
+
+.server-rail nav {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.server-rail button {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  padding: 0;
+  place-items: center;
+  overflow: hidden;
+  color: var(--text);
+  border-radius: 50%;
+  background: var(--sidebar);
+  transition:
+    border-radius 120ms ease,
+    background 120ms ease;
+}
+
+.server-rail button:hover,
+.server-rail button[aria-current="true"] {
+  border-radius: 1rem;
+  background: var(--brand);
+}
+
+.server-rail-home {
+  font-size: 1.1rem;
+  font-weight: 900;
+}
+
+.server-rail .server-rail-add {
+  color: #23a55a;
+  font-size: 1.4rem;
+}
+
+.server-rail .server-rail-add:hover {
+  color: #fff;
+  background: #23a55a;
+}
+
+.server-rail-divider {
+  width: 2rem;
+  height: 0.125rem;
+  background: #35363c;
+}
+
+.server-workspace {
+  position: relative;
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr) 15rem;
+  min-width: 0;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.server-workspace[data-members-open="false"] {
+  grid-template-columns: 15rem minmax(0, 1fr);
+}
+
+.server-workspace[hidden],
+.direct-messages[hidden] {
+  display: none;
+}
+
+.server-workspace .chat-layout {
+  display: contents;
+}
+
+.server-workspace .channel-sidebar {
+  min-width: 0;
+  height: 100dvh;
+  padding: 0;
+  border: 0;
+  background: var(--sidebar);
+}
+
+.server-context-header {
+  display: flex;
+  min-height: 3rem;
+  padding: 0.7rem 0.9rem;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1f2023;
+  box-shadow: 0 1px 0 rgb(0 0 0 / 18%);
+}
+
+.server-context-header h2,
+.server-context-header p {
+  margin: 0;
+}
+
+.server-context-header h2 {
+  overflow: hidden;
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-context-header p {
+  margin-top: 0.1rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.connection-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #f23f42;
+}
+
+.connection-dot[data-connected="true"] {
+  background: #23a55a;
+}
+
+.server-context-actions {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.server-context-actions button {
+  padding: 0.25rem;
+  color: var(--muted);
+  background: transparent;
+}
+
+.server-context-actions button:hover {
+  color: var(--text);
+}
+
+.server-workspace .section-heading {
+  padding: 1rem 0.75rem 0.25rem;
+}
+
+.server-workspace .section-heading h3 {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.server-workspace .section-heading button {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 1.15rem;
+  background: transparent;
+}
+
+.server-workspace .section-heading button:hover {
+  color: var(--text);
+}
+
+.server-workspace .channel-list {
+  padding: 0 0.5rem;
+}
+
+.server-workspace .channel-list button {
+  border-radius: 0.25rem;
+}
+
+.server-workspace .channel-list button:hover,
+.server-workspace .channel-list button[aria-current="true"] {
+  color: var(--text);
+  background: #404249;
+}
+
+.server-workspace .channel-create {
+  gap: 0.4rem;
+  padding: 0.75rem;
+  margin: 0 0.5rem 0.5rem;
+  border-radius: 0.5rem;
+  background: #232428;
+}
+
+.server-workspace .channel-create input,
+.server-workspace .channel-create select,
+.member-sidebar input,
+.member-sidebar select {
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  background: #1e1f22;
+}
+
+.server-workspace .channel-panel {
+  height: 100dvh;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.server-workspace .channel-header {
+  min-height: 3rem;
+  padding: 0.6rem 1rem;
+  align-items: center;
+  border-color: #26272b;
+  box-shadow: 0 1px 0 rgb(0 0 0 / 18%);
+}
+
+.server-workspace .channel-header h3 {
+  font-size: 1rem;
+}
+
+.server-workspace .channel-header p {
+  color: var(--muted);
+}
+
+.members-toggle {
+  padding: 0.4rem 0.65rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  background: transparent;
+}
+
+.navigation-toggle {
+  display: none;
+  padding: 0.35rem;
+  color: var(--muted);
+  background: transparent;
+}
+
+.server-workspace .message-timeline,
+.direct-messages .message-timeline {
+  max-height: none;
+  min-height: 0;
+  padding: 1rem 0.5rem;
+}
+
+.app-shell .message {
+  min-height: 3.25rem;
+  padding: 0.45rem 0.75rem 0.45rem 3.75rem;
+  border-radius: 0;
+}
+
+.app-shell .message::before {
+  position: absolute;
+  top: 0.55rem;
+  left: 1rem;
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: #fff;
+  content: "";
+  border-radius: 50%;
+  background: #5865f2;
+}
+
+.app-shell .message:hover {
+  background: var(--surface-hover);
+}
+
+.app-shell .message-meta strong {
+  font-size: 0.95rem;
+}
+
+.app-shell .message-meta time,
+.app-shell .message-meta span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.app-shell .reaction-list {
+  margin-top: 0.35rem;
+}
+
+.app-shell .reaction-list button,
+.app-shell .message-actions button {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.app-shell .message-composer,
+.direct-messages .channel-panel > .composer {
+  padding: 0 1rem 1.5rem;
+  border: 0;
+}
+
+.app-shell .message-composer input,
+.direct-messages .channel-panel > .composer input {
+  padding: 0.75rem 1rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: var(--surface-raised);
+}
+
+.app-shell .message-composer .composer > button,
+.direct-messages .channel-panel > .composer > button {
+  padding: 0.7rem 0.9rem;
+  color: #fff;
+  background: var(--brand);
+}
+
+.member-sidebar {
+  height: 100dvh;
+  padding: 1rem 0.75rem;
+  overflow-y: auto;
+  background: var(--sidebar);
+}
+
+.member-sidebar[data-open="false"] {
+  display: none;
+}
+
+.member-sidebar > label,
+.member-sidebar > .composer,
+.member-sidebar > .lede,
+.member-sidebar > .status-grid,
+.member-sidebar > section,
+.member-sidebar > button,
+.member-sidebar > p {
+  margin-top: 0.75rem;
+}
+
+.member-sidebar .composer {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.member-sidebar .member-list {
+  gap: 0.35rem;
+}
+
+.member-sidebar .member-list li {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  font-size: 0.75rem;
+  background: transparent;
+}
+
+.member-sidebar .status-grid {
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+}
+
+.member-sidebar .status-grid div {
+  padding: 0.6rem;
+  background: #232428;
+}
+
+.settings-backdrop {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  inset: 0;
+  padding: 2rem;
+  place-items: center;
+  background: rgb(0 0 0 / 64%);
+}
+
+.server-settings {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(56rem, 100%);
+  max-height: min(46rem, calc(100dvh - 4rem));
+  overflow: hidden;
+  border: 1px solid #1f2023;
+  border-radius: 0.75rem;
+  background: var(--sidebar);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 45%);
+}
+
+.channel-dialog {
+  width: min(28rem, 100%);
+  overflow: hidden;
+  border: 1px solid #1f2023;
+  border-radius: 0.75rem;
+  background: var(--sidebar);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 45%);
+}
+
+.channel-dialog > header {
+  display: flex;
+  padding: 1rem 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1f2023;
+}
+
+.channel-dialog > header p,
+.channel-dialog > header h2 {
+  margin: 0;
+}
+
+.channel-dialog > header button {
+  padding: 0.25rem 0.6rem;
+  color: var(--muted);
+  font-size: 1.5rem;
+  background: transparent;
+}
+
+.channel-dialog .channel-create {
+  gap: 0.65rem;
+  padding: 1rem 1.25rem 1.25rem;
+  margin: 0;
+  background: transparent;
+}
+
+.server-settings > header {
+  display: flex;
+  padding: 1rem 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1f2023;
+}
+
+.server-settings > header p,
+.server-settings > header h2 {
+  margin: 0;
+}
+
+.server-settings > header button {
+  padding: 0.25rem 0.6rem;
+  color: var(--muted);
+  font-size: 1.5rem;
+  background: transparent;
+}
+
+.server-settings-content {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.server-settings-content > section {
+  display: grid;
+  gap: 0.65rem;
+  align-content: start;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  background: #232428;
+}
+
+.server-settings-content h3,
+.server-settings-content label,
+.server-settings-content dl,
+.server-settings-content ol,
+.server-settings-content ul {
+  margin: 0;
+}
+
+.server-settings-content .composer {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.server-settings-content input,
+.server-settings-content select {
+  border: 0;
+  background: #1e1f22;
+}
+
+.server-settings-content .status-grid {
+  grid-template-columns: 1fr;
+}
+
+.server-settings-content .member-list {
+  gap: 0.4rem;
+}
+
+.server-settings-content .member-list li {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.direct-messages {
+  display: block;
+  height: 100dvh;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.shell > .direct-messages {
+  --sidebar: #2b2d31;
+  --surface: #313338;
+  --surface-raised: #383a40;
+  --muted: #949ba4;
+  --text: #f2f3f5;
+  --brand: #5865f2;
+  width: min(68rem, 100%);
+  height: min(36rem, 70vh);
+  margin-top: 1rem;
+  border: 1px solid #2e4162;
+  border-radius: 1rem;
+}
+
+.direct-messages .dm-layout {
+  grid-template-columns: 15rem minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+}
+
+.dm-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.75rem 0.5rem 0;
+  border-right: 1px solid #1f2023;
+  background: var(--sidebar);
+}
+
+.dm-sidebar .section-heading {
+  min-height: 2.25rem;
+  padding-inline: 0.25rem;
+}
+
+.dm-sidebar .section-heading h2 {
+  font-size: 0.95rem;
+}
+
+.dm-sidebar .dm-person-picker {
+  z-index: 2;
+  gap: 0.35rem;
+  margin: 0.5rem 0.25rem 0.75rem;
+}
+
+.dm-sidebar .dm-person-picker label {
+  font-size: 0.65rem;
+}
+
+.dm-sidebar .dm-person-picker input {
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  background: #1e1f22;
+}
+
+.dm-sidebar > nav {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.direct-messages .channel-panel {
+  min-height: 0;
+  background: var(--surface);
+}
+
+.direct-messages .channel-panel > h3 {
+  min-height: 3rem;
+  border-color: #26272b;
+}
+
+.current-user-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  min-height: 3.25rem;
+  padding: 0.5rem;
+  margin-top: auto;
+  align-items: center;
+  background: #232428;
+}
+
+.current-user-panel > span:not(.user-avatar) {
+  display: grid;
+  min-width: 0;
+}
+
+.app-shell .current-user-panel strong,
+.app-shell .current-user-panel small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell .current-user-panel strong {
+  font-size: 0.78rem;
+}
+
+.app-shell .current-user-panel small {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.user-avatar {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.current-user-panel button {
+  padding: 0.35rem;
+  color: var(--muted);
+  background: transparent;
+}
+
+@media (max-width: 75rem) {
+  .server-workspace {
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+
+  .member-sidebar {
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    right: 0;
+    display: none;
+    width: 16rem;
+    box-shadow: -1rem 0 2rem rgb(0 0 0 / 30%);
+  }
+
+  .member-sidebar[data-open="true"] {
+    display: block;
+  }
+}
+
+@media (max-width: 48rem) {
+  .app-shell {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+  }
+
+  .server-rail {
+    padding-inline: 0.35rem;
+  }
+
+  .server-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .server-workspace .channel-sidebar {
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    display: none;
+    width: min(18rem, calc(100vw - 3.75rem));
+    box-shadow: 1rem 0 2rem rgb(0 0 0 / 35%);
+  }
+
+  .server-workspace[data-navigation-open="true"] .channel-sidebar {
+    display: flex;
+  }
+
+  .navigation-toggle {
+    display: block;
+  }
+
+  .direct-messages {
+    padding-inline: 0.5rem;
+  }
+
+  .direct-messages .dm-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dm-sidebar {
+    max-height: 8rem;
+    overflow-y: auto;
+  }
+
+  .channel-header p {
+    display: none;
+  }
+
+  .settings-backdrop {
+    padding: 0;
+  }
+
+  .server-settings {
+    width: 100%;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .server-settings-content {
+    grid-template-columns: 1fr;
+  }
+}

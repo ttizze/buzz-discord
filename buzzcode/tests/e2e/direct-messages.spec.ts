@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { closeServerSettings, openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -323,6 +324,7 @@ test("finds people by Display Name and distinguishes duplicate names by username
     "People Search Server",
   );
 
+  await openServerSettings(owner);
   await owner.getByLabel("Invite email").fill("alice_one@example.com");
   await owner.getByRole("button", { name: "Create invitation" }).click();
   const firstInvitation = await owner
@@ -346,6 +348,7 @@ test("finds people by Display Name and distinguishes duplicate names by username
   await expect(secondAlice.getByTestId("active-server-name")).toHaveText(
     "People Search Server",
   );
+  await closeServerSettings(owner);
 
   await signIn(hiddenAlice, "alice_hidden");
 
@@ -365,6 +368,7 @@ test("finds people by Display Name and distinguishes duplicate names by username
     ),
   ).toEqual(["alice_one", "alice_two"]);
 
+  await owner.getByRole("button", { name: "Home" }).click();
   await owner.getByLabel("Find or start a Direct Message").fill("Alice");
   await expect(
     owner.getByRole("button", { name: "Alice @alice_one" }),

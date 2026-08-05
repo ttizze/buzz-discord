@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { closeServerSettings, openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -26,8 +27,23 @@ test("chats in an Open Channel with durable flat Replies", async ({
   await signIn(owner, "owner");
   await owner.getByLabel("Server name").fill("Chat Server");
   await owner.getByRole("button", { name: "Create Server" }).click();
+  await expect(owner.getByLabel("Channel name")).toHaveCount(0);
+  await owner.getByRole("button", { name: "Add Channel" }).click();
+  await expect(
+    owner.getByRole("dialog", { name: "Create Channel" }),
+  ).toBeVisible();
+  await owner.keyboard.press("Escape");
+  await expect(
+    owner.getByRole("dialog", { name: "Create Channel" }),
+  ).toHaveCount(0);
+  await expect(
+    owner.getByRole("button", { name: "Add Channel" }),
+  ).toBeFocused();
+  await owner.getByRole("button", { name: "Add Channel" }).click();
   await owner.getByLabel("Channel name").fill("general");
-  await owner.getByRole("button", { name: "Create Channel" }).click();
+  await owner
+    .getByRole("button", { name: "Create Channel", exact: true })
+    .click();
   await expect(owner.getByTestId("active-channel-name")).toHaveText(
     "# general",
   );
@@ -36,6 +52,7 @@ test("chats in an Open Channel with durable flat Replies", async ({
     .getAttribute("data-server-id");
   expect(serverId).toBeTruthy();
 
+  await openServerSettings(owner);
   await owner.getByLabel("Invite email").fill("member@example.com");
   await owner.getByRole("button", { name: "Create invitation" }).click();
   const invitation = await owner.getByTestId("invitation-code").textContent();
@@ -53,6 +70,7 @@ test("chats in an Open Channel with durable flat Replies", async ({
   const mentionInvitationOutput = owner.getByTestId("invitation-code");
   await expect(mentionInvitationOutput).not.toHaveText(invitation ?? "");
   const mentionInvitation = await mentionInvitationOutput.textContent();
+  await closeServerSettings(owner);
   const mentionTargetContext = await browser.newContext();
   const mentionTarget = await mentionTargetContext.newPage();
   await signIn(mentionTarget, "mention_target");
@@ -416,6 +434,7 @@ test("chats in an Open Channel with durable flat Replies", async ({
     { apiOrigin: harness.apiOrigin, serverId, messageId: replyOneId },
   );
   expect(deletionAuditCount).toBe(1);
+  await openServerSettings(owner);
   await expect(owner.getByTestId("audit-history")).toContainText(
     "message.edited",
   );

@@ -133,6 +133,7 @@ export type DirectMessageEvent =
 export type ServerMember = Readonly<{
   subject: string;
   email: string;
+  handle: string;
   displayName: string;
   role: Server["role"];
 }>;
@@ -409,6 +410,7 @@ function parseMember(value: unknown): ServerMember {
     !isRecord(value) ||
     typeof value.subject !== "string" ||
     typeof value.email !== "string" ||
+    typeof value.handle !== "string" ||
     typeof value.displayName !== "string" ||
     !["owner", "admin", "member"].includes(String(value.role))
   ) {
@@ -417,6 +419,7 @@ function parseMember(value: unknown): ServerMember {
   return {
     subject: value.subject,
     email: value.email,
+    handle: value.handle,
     displayName: value.displayName,
     role: value.role as ServerMember["role"],
   };

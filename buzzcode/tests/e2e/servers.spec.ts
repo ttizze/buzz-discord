@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { closeServerSettings, openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -30,7 +31,59 @@ test("creates the first Server and makes its creator the Owner", async ({
     "Alpha Server",
   );
   await expect(page.getByTestId("active-member-role")).toHaveText("Owner");
+  await expect(page.getByTestId("account-handle")).toHaveText("@owner");
+  await expect(page.getByTestId("server-rail")).toBeVisible();
+  await expect(page.getByTestId("context-sidebar")).toBeVisible();
+  await expect(page.getByTestId("content-pane")).toBeVisible();
+  await expect(page.getByTestId("member-sidebar")).toBeVisible();
+  await expect(
+    page
+      .getByTestId("member-sidebar")
+      .getByRole("heading", { name: "Members" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("member-sidebar")).toContainText("@owner");
+  await expect(page.getByTestId("member-sidebar")).not.toContainText(
+    "owner@example.com",
+  );
+  await page.getByRole("button", { name: "Toggle Members" }).click();
+  await expect(page.getByTestId("member-sidebar")).toBeHidden();
+  await page.getByRole("button", { name: "Toggle Members" }).click();
+  await expect(page.getByTestId("member-sidebar")).toBeVisible();
+  await expect(page.getByLabel("New Server name")).toHaveCount(0);
 
+  await openServerSettings(page);
+  await expect(page.getByLabel("New Server name")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("dialog", { name: "Server Settings" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Server Settings" }),
+  ).toBeFocused();
+
+  await page.getByRole("button", { name: "Home" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Direct Messages" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Server Channels" }),
+  ).toBeHidden();
+
+  await page.getByRole("button", { name: "Alpha Server" }).click();
+  await expect(
+    page.getByRole("region", { name: "Server Channels" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Direct Messages" }),
+  ).toBeHidden();
+
+  await page.setViewportSize({ width: 700, height: 720 });
+  await expect(page.getByTestId("context-sidebar")).toBeHidden();
+  await page.getByRole("button", { name: "Toggle Channels" }).click();
+  await expect(page.getByTestId("context-sidebar")).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  await openServerSettings(page);
   await page.getByLabel("New Server name").fill("Beta Server");
   await page.getByRole("button", { name: "Create another Server" }).click();
   await expect(page.getByTestId("active-server-name")).toHaveText(
@@ -39,14 +92,18 @@ test("creates the first Server and makes its creator the Owner", async ({
 
   await page.getByLabel("Durable value").fill("beta-only-value");
   await page.getByRole("button", { name: "Save" }).click();
+  await closeServerSettings(page);
   await page.getByRole("button", { name: "Alpha Server" }).click();
+  await openServerSettings(page);
   await expect(page.getByTestId("durable-value")).toHaveText(
     "Buzzcode is ready",
   );
   await page.getByLabel("Durable value").fill("alpha-only-value");
   await page.getByRole("button", { name: "Save" }).click();
+  await closeServerSettings(page);
 
   await page.getByRole("button", { name: "Beta Server" }).click();
+  await openServerSettings(page);
   await expect(page.getByTestId("durable-value")).toHaveText("beta-only-value");
 
   const alphaId = await page
@@ -64,6 +121,7 @@ test("creates the first Server and makes its creator the Owner", async ({
   await expect(alphaObserver.getByTestId("active-server-name")).toHaveText(
     "Alpha Server",
   );
+  await openServerSettings(alphaObserver);
   await expect(alphaObserver.getByTestId("realtime-status")).toHaveText(
     "Connected",
   );
@@ -74,7 +132,9 @@ test("creates the first Server and makes its creator the Owner", async ({
     "alpha-only-value",
   );
 
+  await closeServerSettings(page);
   await page.getByRole("button", { name: "Alpha Server" }).click();
+  await openServerSettings(page);
   await expect(page.getByTestId("active-server-name")).toHaveText(
     "Alpha Server",
   );

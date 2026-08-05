@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -35,6 +36,8 @@ test("persists a value, broadcasts it, and reads it after restart", async ({
   await expect(writer.getByTestId("realtime-status")).toHaveText("Connected");
 
   const durableValue = "persisted-after-restart";
+  await openServerSettings(observer);
+  await openServerSettings(writer);
   await writer.getByLabel("Durable value").fill(durableValue);
   await writer.getByRole("button", { name: "Save" }).click();
 
@@ -43,5 +46,6 @@ test("persists a value, broadcasts it, and reads it after restart", async ({
   await harness.restartServer();
 
   await observer.reload();
+  await openServerSettings(observer);
   await expect(observer.getByTestId("durable-value")).toHaveText(durableValue);
 });

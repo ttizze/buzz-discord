@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import { E2eHarness } from "./harness";
+import { closeServerSettings, openServerSettings } from "./ui";
 
 const harness = new E2eHarness();
 
@@ -23,6 +24,7 @@ async function inviteAndJoin(
   member: Page,
   user: string,
 ): Promise<void> {
+  await openServerSettings(owner);
   const invitationOutput = owner.getByTestId("invitation-code");
   const previousInvitation =
     (await invitationOutput.count()) === 0
@@ -63,13 +65,17 @@ test("protects a Private direct server Channel at every access path", async ({
   await inviteAndJoin(owner, member, "member");
   await inviteAndJoin(owner, outsider, "outsider");
   await inviteAndJoin(owner, admin, "admin");
-  await owner.getByLabel("Role for admin@example.com").selectOption("admin");
+  await owner.getByLabel("Role for @admin").selectOption("admin");
   await expect(admin.getByTestId("active-member-role")).toHaveText("Admin");
 
+  await closeServerSettings(owner);
+  await owner.getByRole("button", { name: "Add Channel" }).click();
   await owner.getByLabel("Channel name").fill("leadership");
   await owner.getByLabel("Channel visibility").selectOption("private");
-  await owner.getByLabel("Allow member@example.com").check();
-  await owner.getByRole("button", { name: "Create Channel" }).click();
+  await owner.getByLabel("Allow member @member").check();
+  await owner
+    .getByRole("button", { name: "Create Channel", exact: true })
+    .click();
   await expect(owner.getByTestId("active-channel-name")).toHaveText(
     "# leadership",
   );
@@ -186,7 +192,7 @@ test("protects a Private direct server Channel at every access path", async ({
   );
   expect(visibilityStatus).toBe(409);
 
-  await owner.getByLabel("Allow outsider@example.com").check();
+  await owner.getByLabel("Allow outsider @outsider").check();
   await owner.getByRole("button", { name: "Save Channel access" }).click();
   await expect(
     outsider.getByRole("button", { name: "leadership" }),
@@ -197,7 +203,7 @@ test("protects a Private direct server Channel at every access path", async ({
     outsider.getByText("access granted live", { exact: true }),
   ).toBeVisible();
 
-  await owner.getByLabel("Allow outsider@example.com").uncheck();
+  await owner.getByLabel("Allow outsider @outsider").uncheck();
   await owner.getByRole("button", { name: "Save Channel access" }).click();
   await expect(
     outsider.getByRole("button", { name: "leadership" }),
@@ -216,6 +222,7 @@ test("protects a Private direct server Channel at every access path", async ({
     { apiOrigin: harness.apiOrigin, serverId, channelId },
   );
   expect(revokedStatus).toBe(404);
+  await openServerSettings(owner);
   await expect(owner.getByTestId("audit-history")).toContainText(
     "channel.access_changed",
   );

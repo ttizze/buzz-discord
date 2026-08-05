@@ -29,7 +29,13 @@ function mergeMessages(
   );
 }
 
-export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
+export function DirectMessagesPanel({
+  session,
+  hidden = false,
+}: {
+  session: SignedInSession;
+  hidden?: boolean;
+}) {
   const [directMessages, setDirectMessages] = useState<
     readonly DirectMessage[]
   >([]);
@@ -202,65 +208,80 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
   }
 
   return (
-    <section className="direct-messages card" aria-labelledby="dm-heading">
-      <header className="section-heading">
-        <h2 id="dm-heading">Direct Messages</h2>
-        <span data-testid="dm-realtime-status">
-          {connected ? "Connected" : "Disconnected"}
-        </span>
-      </header>
-      <div className="dm-person-picker">
-        <label htmlFor="direct-message-person">
-          Find or start a Direct Message
-        </label>
-        <input
-          id="direct-message-person"
-          value={peopleQuery}
-          placeholder="Search by Display Name or Handle"
-          autoCapitalize="none"
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(event) => setPeopleQuery(event.target.value)}
-        />
-        {peopleQuery.trim() !== "" && (
-          <div className="dm-person-results">
-            {people.map((person) => (
+    <section
+      className="direct-messages"
+      aria-labelledby="dm-heading"
+      hidden={hidden}
+    >
+      <div className="dm-layout">
+        <aside className="dm-sidebar" data-testid="home-sidebar">
+          <header className="section-heading">
+            <h2 id="dm-heading">Direct Messages</h2>
+            <span data-testid="dm-realtime-status">
+              {connected ? "Connected" : "Disconnected"}
+            </span>
+          </header>
+          <div className="dm-person-picker">
+            <label htmlFor="direct-message-person">
+              Find or start a Direct Message
+            </label>
+            <input
+              id="direct-message-person"
+              value={peopleQuery}
+              placeholder="Search by Display Name or Handle"
+              autoCapitalize="none"
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(event) => setPeopleQuery(event.target.value)}
+            />
+            {peopleQuery.trim() !== "" && (
+              <div className="dm-person-results">
+                {people.map((person) => (
+                  <button
+                    key={person.userId}
+                    type="button"
+                    onClick={() => void openDirectMessage(person)}
+                  >
+                    <strong>{person.displayName}</strong>
+                    <span>@{person.handle}</span>
+                  </button>
+                ))}
+                {peopleStatus === "loading" && <p>Searching…</p>}
+                {peopleStatus === "ready" && people.length === 0 && (
+                  <p>No one found.</p>
+                )}
+                {peopleStatus === "error" && <p>Search is unavailable.</p>}
+              </div>
+            )}
+          </div>
+          <nav aria-label="Direct Messages" className="channel-list">
+            {directMessages.map((directMessage) => (
               <button
-                key={person.userId}
+                key={directMessage.id}
                 type="button"
-                onClick={() => void openDirectMessage(person)}
+                data-direct-message-id={directMessage.id}
+                aria-current={active?.id === directMessage.id}
+                onClick={() => setActive(directMessage)}
               >
-                <strong>{person.displayName}</strong>
-                <span>@{person.handle}</span>
+                {directMessage.peerDisplayName}
+                {directMessages.some(
+                  (candidate) =>
+                    candidate.id !== directMessage.id &&
+                    candidate.peerDisplayName === directMessage.peerDisplayName,
+                ) && ` @${directMessage.peerHandle}`}
               </button>
             ))}
-            {peopleStatus === "loading" && <p>Searching…</p>}
-            {peopleStatus === "ready" && people.length === 0 && (
-              <p>No one found.</p>
-            )}
-            {peopleStatus === "error" && <p>Search is unavailable.</p>}
+          </nav>
+          <div className="current-user-panel">
+            <span className="user-avatar" aria-hidden="true">
+              {session.user.displayName.slice(0, 1)}
+            </span>
+            <span>
+              <strong>{session.user.displayName}</strong>
+              <small>@{session.user.handle}</small>
+            </span>
           </div>
-        )}
-      </div>
-      <div className="dm-layout">
-        <nav aria-label="Direct Messages" className="channel-list">
-          {directMessages.map((directMessage) => (
-            <button
-              key={directMessage.id}
-              type="button"
-              data-direct-message-id={directMessage.id}
-              aria-current={active?.id === directMessage.id}
-              onClick={() => setActive(directMessage)}
-            >
-              {directMessage.peerDisplayName}
-              {directMessages.some(
-                (candidate) =>
-                  candidate.id !== directMessage.id &&
-                  candidate.peerDisplayName === directMessage.peerDisplayName,
-              ) && ` @${directMessage.peerHandle}`}
-            </button>
-          ))}
-        </nav>
+        </aside>
         <section className="channel-panel">
           {active === null ? (
             <p className="channel-empty">Choose a person to start talking.</p>
