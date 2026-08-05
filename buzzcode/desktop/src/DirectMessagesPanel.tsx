@@ -31,11 +31,14 @@ function mergeMessages(
 
 export function DirectMessagesPanel({
   session,
+  onSignOut,
   hidden = false,
 }: {
   session: SignedInSession;
+  onSignOut: () => void;
   hidden?: boolean;
 }) {
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [directMessages, setDirectMessages] = useState<
     readonly DirectMessage[]
   >([]);
@@ -54,13 +57,40 @@ export function DirectMessagesPanel({
   const [editDraft, setEditDraft] = useState("");
   const [connected, setConnected] = useState(false);
   const activeId = useRef<string | null>(null);
+  const navigationToggle = useRef<HTMLButtonElement | null>(null);
+  const navigationDrawer = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!navigationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setNavigationOpen(false);
+      window.requestAnimationFrame(() => navigationToggle.current?.focus());
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [navigationOpen]);
+
+  function toggleNavigation() {
+    setNavigationOpen((current) => {
+      const next = !current;
+      if (next) {
+        window.requestAnimationFrame(() => navigationDrawer.current?.focus());
+      }
+      return next;
+    });
+  }
 
   const reloadDirectMessages = useCallback(async (preferredId?: string) => {
     const loaded = await listDirectMessages();
     setDirectMessages(loaded);
     setActive((current) => {
-      const wanted = preferredId ?? current?.id;
-      return loaded.find((item) => item.id === wanted) ?? current;
+      const wanted =
+        preferredId ??
+        current?.id ??
+        window.localStorage.getItem("buzzcode.active-direct-message");
+      return loaded.find((item) => item.id === wanted) ?? loaded[0] ?? null;
     });
   }, []);
 
@@ -128,6 +158,9 @@ export function DirectMessagesPanel({
 
   useEffect(() => {
     activeId.current = active?.id ?? null;
+    if (active !== null) {
+      window.localStorage.setItem("buzzcode.active-direct-message", active.id);
+    }
     setMessages([]);
     setReplyingTo(null);
     setEditingId(null);
@@ -167,6 +200,7 @@ export function DirectMessagesPanel({
     setPeople([]);
     await reloadDirectMessages(created.id);
     setActive(created);
+    setNavigationOpen(false);
   }
 
   async function sendMessage() {
@@ -214,7 +248,13 @@ export function DirectMessagesPanel({
       hidden={hidden}
     >
       <div className="dm-layout">
-        <aside className="dm-sidebar" data-testid="home-sidebar">
+        <aside
+          ref={navigationDrawer}
+          className="dm-sidebar"
+          data-testid="home-sidebar"
+          data-open={navigationOpen}
+          tabIndex={-1}
+        >
           <header className="section-heading">
             <h2 id="dm-heading">Direct Messages</h2>
             <span data-testid="dm-realtime-status">
@@ -261,7 +301,10 @@ export function DirectMessagesPanel({
                 type="button"
                 data-direct-message-id={directMessage.id}
                 aria-current={active?.id === directMessage.id}
-                onClick={() => setActive(directMessage)}
+                onClick={() => {
+                  setActive(directMessage);
+                  setNavigationOpen(false);
+                }}
               >
                 {directMessage.peerDisplayName}
                 {directMessages.some(
@@ -280,21 +323,51 @@ export function DirectMessagesPanel({
               <strong>{session.user.displayName}</strong>
               <small>@{session.user.handle}</small>
             </span>
+            <button type="button" aria-label="Sign out" onClick={onSignOut}>
+              ↪
+            </button>
           </div>
         </aside>
         <section className="channel-panel">
           {active === null ? (
-            <p className="channel-empty">Choose a person to start talking.</p>
+            <>
+              <header className="dm-channel-header">
+                <button
+                  ref={navigationToggle}
+                  className="dm-navigation-toggle"
+                  type="button"
+                  aria-label="Toggle Direct Messages"
+                  aria-expanded={navigationOpen}
+                  onClick={toggleNavigation}
+                >
+                  ☰
+                </button>
+                <h3>Home</h3>
+              </header>
+              <p className="channel-empty">Choose a person to start talking.</p>
+            </>
           ) : (
             <>
-              <h3 data-testid="active-dm-name">
-                {active.peerDisplayName}
-                {directMessages.some(
-                  (candidate) =>
-                    candidate.id !== active.id &&
-                    candidate.peerDisplayName === active.peerDisplayName,
-                ) && ` @${active.peerHandle}`}
-              </h3>
+              <header className="dm-channel-header">
+                <button
+                  ref={navigationToggle}
+                  className="dm-navigation-toggle"
+                  type="button"
+                  aria-label="Toggle Direct Messages"
+                  aria-expanded={navigationOpen}
+                  onClick={toggleNavigation}
+                >
+                  ☰
+                </button>
+                <h3 data-testid="active-dm-name">
+                  {active.peerDisplayName}
+                  {directMessages.some(
+                    (candidate) =>
+                      candidate.id !== active.id &&
+                      candidate.peerDisplayName === active.peerDisplayName,
+                  ) && ` @${active.peerHandle}`}
+                </h3>
+              </header>
               <div
                 className="message-timeline"
                 role="log"

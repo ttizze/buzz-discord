@@ -369,6 +369,10 @@ test("finds people by Display Name and distinguishes duplicate names by username
   ).toEqual(["alice_one", "alice_two"]);
 
   await owner.getByRole("button", { name: "Home" }).click();
+  await owner.setViewportSize({ width: 700, height: 720 });
+  await expect(owner.getByTestId("home-sidebar")).toBeHidden();
+  await owner.getByRole("button", { name: "Toggle Direct Messages" }).click();
+  await expect(owner.getByTestId("home-sidebar")).toBeVisible();
   await owner.getByLabel("Find or start a Direct Message").fill("Alice");
   await expect(
     owner.getByRole("button", { name: "Alice @alice_one" }),
@@ -382,12 +386,15 @@ test("finds people by Display Name and distinguishes duplicate names by username
 
   await owner.getByRole("button", { name: "Alice @alice_two" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText("Alice");
+  await expect(owner.getByTestId("home-sidebar")).toBeHidden();
 
+  await owner.getByRole("button", { name: "Toggle Direct Messages" }).click();
   await owner.getByLabel("Find or start a Direct Message").fill("Alice");
   await owner.getByRole("button", { name: "Alice @alice_one" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText(
     "Alice @alice_one",
   );
+  await owner.setViewportSize({ width: 1280, height: 720 });
   await expect(
     owner.getByRole("navigation", { name: "Direct Messages" }),
   ).toContainText("Alice @alice_one");

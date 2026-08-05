@@ -39,6 +39,7 @@ import {
 } from "./api";
 import { DirectMessagesPanel } from "./DirectMessagesPanel";
 import "./styles.css";
+import { useModalDialog } from "./useModalDialog";
 
 function ChannelMemberPicker({
   members,
@@ -73,6 +74,20 @@ function ChannelMemberPicker({
           </label>
         ))}
     </fieldset>
+  );
+}
+
+function memberRoleLabel(role: ServerMember["role"]): string {
+  if (role === "owner") return "Owner";
+  if (role === "admin") return "Admin";
+  return "Member";
+}
+
+function MemberIdentity({ member }: { member: ServerMember }) {
+  return (
+    <span>
+      {member.displayName} (@{member.handle})
+    </span>
   );
 }
 
@@ -139,13 +154,18 @@ function AuthenticatedApp({
 }: {
   session: AuthSession & { authenticated: true };
 }) {
-  const [activeArea, setActiveArea] = useState<"home" | "server">("server");
+  const [activeArea, setActiveArea] = useState<"home" | "server">(() =>
+    window.localStorage.getItem("buzzcode.active-area") === "home"
+      ? "home"
+      : "server",
+  );
   const [membersOpen, setMembersOpen] = useState(
     () => window.matchMedia("(min-width: 75.0625rem)").matches,
   );
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [channelDialogOpen, setChannelDialogOpen] = useState(false);
+  const settingsDialog = useModalDialog();
+  const channelDialog = useModalDialog();
+  const channelAccessDialog = useModalDialog();
   const [servers, setServers] = useState<readonly Server[] | null>(null);
   const [activeServer, setActiveServer] = useState<Server | null>(null);
   const [serverName, setServerName] = useState("");
@@ -183,30 +203,10 @@ function AuthenticatedApp({
   const [inviteCode, setInviteCode] = useState("");
   const managementRequestVersion = useRef(0);
   const messageChannelId = useRef<string | null>(null);
-  const settingsTrigger = useRef<HTMLButtonElement | null>(null);
-  const settingsCloseButton = useRef<HTMLButtonElement | null>(null);
-  const channelDialogTrigger = useRef<HTMLButtonElement | null>(null);
-  const channelDialogCloseButton = useRef<HTMLButtonElement | null>(null);
-
-  const closeSettings = useCallback(() => {
-    setSettingsOpen(false);
-    window.requestAnimationFrame(() => settingsTrigger.current?.focus());
-  }, []);
-
-  const openSettings = useCallback((trigger: HTMLButtonElement) => {
-    settingsTrigger.current = trigger;
-    setSettingsOpen(true);
-  }, []);
-
-  const closeChannelDialog = useCallback(() => {
-    setChannelDialogOpen(false);
-    window.requestAnimationFrame(() => channelDialogTrigger.current?.focus());
-  }, []);
-
-  const openChannelDialog = useCallback((trigger: HTMLButtonElement) => {
-    channelDialogTrigger.current = trigger;
-    setChannelDialogOpen(true);
-  }, []);
+  const navigationToggle = useRef<HTMLButtonElement | null>(null);
+  const navigationDrawer = useRef<HTMLElement | null>(null);
+  const memberToggle = useRef<HTMLButtonElement | null>(null);
+  const memberDrawer = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const wideLayout = window.matchMedia("(min-width: 75.0625rem)");
@@ -216,28 +216,62 @@ function AuthenticatedApp({
   }, []);
 
   useEffect(() => {
-    if (!settingsOpen) return;
-    settingsCloseButton.current?.focus();
+    if (!navigationOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        document.querySelector("[aria-modal='true']") !== null
+      ) {
+        return;
+      }
       event.preventDefault();
-      closeSettings();
+      setNavigationOpen(false);
+      window.requestAnimationFrame(() => navigationToggle.current?.focus());
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [closeSettings, settingsOpen]);
+  }, [navigationOpen]);
 
   useEffect(() => {
-    if (!channelDialogOpen) return;
-    channelDialogCloseButton.current?.focus();
+    if (!membersOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        document.querySelector("[aria-modal='true']") !== null
+      ) {
+        return;
+      }
       event.preventDefault();
-      closeChannelDialog();
+      setMembersOpen(false);
+      window.requestAnimationFrame(() => memberToggle.current?.focus());
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [channelDialogOpen, closeChannelDialog]);
+  }, [membersOpen]);
+
+  function toggleNavigation(trigger: HTMLButtonElement) {
+    navigationToggle.current = trigger;
+    setNavigationOpen((current) => {
+      const next = !current;
+      if (next) {
+        window.requestAnimationFrame(() => navigationDrawer.current?.focus());
+      }
+      return next;
+    });
+  }
+
+  function toggleMembers(trigger: HTMLButtonElement) {
+    memberToggle.current = trigger;
+    setMembersOpen((current) => {
+      const next = !current;
+      if (next) {
+        window.requestAnimationFrame(() => memberDrawer.current?.focus());
+      }
+      return next;
+    });
+  }
 
   const mergeMessages = useCallback(
     (
@@ -257,7 +291,10 @@ function AuthenticatedApp({
     const loaded = await listServers();
     setServers(loaded);
     setActiveServer((current) => {
-      const wanted = preferredId ?? current?.id;
+      const wanted =
+        preferredId ??
+        current?.id ??
+        window.localStorage.getItem("buzzcode.active-server");
       return loaded.find((server) => server.id === wanted) ?? loaded[0] ?? null;
     });
   }, []);
@@ -277,7 +314,10 @@ function AuthenticatedApp({
     const loaded = await listChannels(serverId);
     setChannels(loaded);
     setActiveChannel((current) => {
-      const refreshed = loaded.find((channel) => channel.id === current?.id);
+      const wanted =
+        current?.id ??
+        window.localStorage.getItem(`buzzcode.active-channel.${serverId}`);
+      const refreshed = loaded.find((channel) => channel.id === wanted);
       if (
         refreshed !== undefined &&
         current !== null &&
@@ -294,6 +334,23 @@ function AuthenticatedApp({
       return loaded[0] ?? null;
     });
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("buzzcode.active-area", activeArea);
+  }, [activeArea]);
+
+  useEffect(() => {
+    if (activeServer === null) return;
+    window.localStorage.setItem("buzzcode.active-server", activeServer.id);
+  }, [activeServer]);
+
+  useEffect(() => {
+    if (activeServer === null || activeChannel === null) return;
+    window.localStorage.setItem(
+      `buzzcode.active-channel.${activeServer.id}`,
+      activeChannel.id,
+    );
+  }, [activeChannel, activeServer]);
 
   const reloadMessages = useCallback(
     async (serverId: string, channelId: string) => {
@@ -486,10 +543,34 @@ function AuthenticatedApp({
     setMentionCandidates([]);
   }
 
+  function selectServer(server: Server) {
+    if (activeServer?.id !== server.id) {
+      managementRequestVersion.current += 1;
+      messageChannelId.current = null;
+      setChannels(null);
+      setActiveChannel(null);
+      setMessages([]);
+      setNextBefore(undefined);
+      setMembers([]);
+      setAudit([]);
+      setDurableValue("Loading…");
+      setDraft("");
+      setMessageDraft("");
+      setDraftMentions([]);
+      setMentionCandidates([]);
+      setReplyingTo(null);
+      setEditingMessageId(null);
+      setChannelAccessMembers([]);
+    }
+    setActiveServer(server);
+    setActiveArea("server");
+    setNavigationOpen(false);
+  }
+
   async function addServer() {
     const server = await createServer(serverName);
     setServers((current) => [...(current ?? []), server]);
-    setActiveServer(server);
+    selectServer(server);
     setServerName("");
   }
 
@@ -509,7 +590,7 @@ function AuthenticatedApp({
     setChannelName("");
     setChannelVisibility("open");
     setNewChannelMembers([]);
-    setChannelDialogOpen(false);
+    channelDialog.close();
   }
 
   async function saveChannelAccess() {
@@ -528,6 +609,7 @@ function AuthenticatedApp({
     );
     setActiveChannel(channel);
     await reloadManagement(activeServer.id);
+    channelAccessDialog.close();
   }
 
   async function sendMessage() {
@@ -676,7 +758,10 @@ function AuthenticatedApp({
           </div>
           {joinServerForm}
         </section>
-        <DirectMessagesPanel session={session} />
+        <DirectMessagesPanel
+          session={session}
+          onSignOut={() => void logout().then(() => window.location.reload())}
+        />
       </main>
     );
   }
@@ -705,10 +790,7 @@ function AuthenticatedApp({
                 activeArea === "server" && activeServer.id === server.id
               }
               data-server-id={server.id}
-              onClick={() => {
-                setActiveServer(server);
-                setActiveArea("server");
-              }}
+              onClick={() => selectServer(server)}
             >
               <span aria-hidden="true">{server.name.slice(0, 2)}</span>
             </button>
@@ -720,7 +802,7 @@ function AuthenticatedApp({
           aria-label="Add or join a Server"
           onClick={(event) => {
             setActiveArea("server");
-            openSettings(event.currentTarget);
+            settingsDialog.open(event.currentTarget);
             window.setTimeout(
               () =>
                 document
@@ -740,7 +822,12 @@ function AuthenticatedApp({
         hidden={activeArea !== "server"}
       >
         <section className="chat-layout">
-          <aside className="channel-sidebar" data-testid="context-sidebar">
+          <aside
+            ref={navigationDrawer}
+            className="channel-sidebar"
+            data-testid="context-sidebar"
+            tabIndex={-1}
+          >
             <header className="server-context-header">
               <div>
                 <h2 data-testid="active-server-name">{activeServer.name}</h2>
@@ -762,7 +849,7 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Server Settings"
-                  onClick={(event) => openSettings(event.currentTarget)}
+                  onClick={(event) => settingsDialog.open(event.currentTarget)}
                 >
                   ⚙
                 </button>
@@ -775,7 +862,7 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Add Channel"
-                  onClick={(event) => openChannelDialog(event.currentTarget)}
+                  onClick={(event) => channelDialog.open(event.currentTarget)}
                 >
                   +
                 </button>
@@ -827,21 +914,23 @@ function AuthenticatedApp({
               <>
                 <header className="channel-header">
                   <button
+                    ref={navigationToggle}
                     className="navigation-toggle"
                     type="button"
                     aria-label="Toggle Channels"
                     aria-expanded={navigationOpen}
-                    onClick={() => setNavigationOpen((current) => !current)}
+                    onClick={(event) => toggleNavigation(event.currentTarget)}
                   >
                     ☰
                   </button>
                   <h3>No channels yet</h3>
                   <button
+                    ref={memberToggle}
                     className="members-toggle"
                     type="button"
                     aria-label="Toggle Members"
                     aria-expanded={membersOpen}
-                    onClick={() => setMembersOpen((current) => !current)}
+                    onClick={(event) => toggleMembers(event.currentTarget)}
                   >
                     Members
                   </button>
@@ -856,11 +945,12 @@ function AuthenticatedApp({
               <>
                 <header className="channel-header">
                   <button
+                    ref={navigationToggle}
                     className="navigation-toggle"
                     type="button"
                     aria-label="Toggle Channels"
                     aria-expanded={navigationOpen}
-                    onClick={() => setNavigationOpen((current) => !current)}
+                    onClick={(event) => toggleNavigation(event.currentTarget)}
                   >
                     ☰
                   </button>
@@ -875,30 +965,27 @@ function AuthenticatedApp({
                     </p>
                   </div>
                   <button
+                    ref={memberToggle}
                     className="members-toggle"
                     type="button"
                     aria-label="Toggle Members"
                     aria-expanded={membersOpen}
-                    onClick={() => setMembersOpen((current) => !current)}
+                    onClick={(event) => toggleMembers(event.currentTarget)}
                   >
                     Members
                   </button>
                   {activeChannel.visibility === "private" &&
                     (activeServer.role === "owner" ||
                       activeServer.role === "admin") && (
-                      <div className="channel-access-editor">
-                        <ChannelMemberPicker
-                          members={members}
-                          selectedSubjects={channelAccessMembers}
-                          onChange={setChannelAccessMembers}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void saveChannelAccess()}
-                        >
-                          Save Channel access
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        aria-label="Edit Channel Access"
+                        onClick={(event) =>
+                          channelAccessDialog.open(event.currentTarget)
+                        }
+                      >
+                        Access
+                      </button>
                     )}
                 </header>
                 <div
@@ -1137,33 +1224,28 @@ function AuthenticatedApp({
           </section>
         </section>
         <aside
+          ref={memberDrawer}
           className="member-sidebar"
           data-testid="member-sidebar"
           data-open={membersOpen}
+          tabIndex={-1}
         >
           <section aria-labelledby="members-heading">
             <h3 id="members-heading">Members</h3>
             <ul className="member-list">
               {members.map((member) => (
                 <li key={member.subject} data-member-subject={member.subject}>
-                  <span>
-                    {member.displayName} (@{member.handle})
-                  </span>
-                  <strong>
-                    {member.role === "owner"
-                      ? "Owner"
-                      : member.role === "admin"
-                        ? "Admin"
-                        : "Member"}
-                  </strong>
+                  <MemberIdentity member={member} />
+                  <strong>{memberRoleLabel(member.role)}</strong>
                 </li>
               ))}
             </ul>
           </section>
         </aside>
-        {channelDialogOpen && (
+        {channelDialog.isOpen && (
           <div className="settings-backdrop">
             <section
+              ref={channelDialog.dialogRef}
               className="channel-dialog"
               role="dialog"
               aria-modal="true"
@@ -1175,10 +1257,10 @@ function AuthenticatedApp({
                   <h2 id="create-channel-heading">Create Channel</h2>
                 </div>
                 <button
-                  ref={channelDialogCloseButton}
+                  ref={channelDialog.closeButtonRef}
                   type="button"
                   aria-label="Close Create Channel"
-                  onClick={closeChannelDialog}
+                  onClick={channelDialog.close}
                 >
                   ×
                 </button>
@@ -1222,9 +1304,46 @@ function AuthenticatedApp({
             </section>
           </div>
         )}
-        {settingsOpen && (
+        {channelAccessDialog.isOpen && activeChannel !== null && (
           <div className="settings-backdrop">
             <section
+              ref={channelAccessDialog.dialogRef}
+              className="channel-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="channel-access-heading"
+            >
+              <header>
+                <div>
+                  <p className="eyebrow"># {activeChannel.name}</p>
+                  <h2 id="channel-access-heading">Channel Access</h2>
+                </div>
+                <button
+                  ref={channelAccessDialog.closeButtonRef}
+                  type="button"
+                  aria-label="Close Channel Access"
+                  onClick={channelAccessDialog.close}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="channel-create">
+                <ChannelMemberPicker
+                  members={members}
+                  selectedSubjects={channelAccessMembers}
+                  onChange={setChannelAccessMembers}
+                />
+                <button type="button" onClick={() => void saveChannelAccess()}>
+                  Save Channel access
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {settingsDialog.isOpen && (
+          <div className="settings-backdrop">
+            <section
+              ref={settingsDialog.dialogRef}
               className="server-settings"
               role="dialog"
               aria-modal="true"
@@ -1236,10 +1355,10 @@ function AuthenticatedApp({
                   <h2 id="server-settings-heading">Server Settings</h2>
                 </div>
                 <button
-                  ref={settingsCloseButton}
+                  ref={settingsDialog.closeButtonRef}
                   type="button"
                   aria-label="Close Server Settings"
-                  onClick={closeSettings}
+                  onClick={settingsDialog.close}
                 >
                   ×
                 </button>
@@ -1319,19 +1438,11 @@ function AuthenticatedApp({
                         key={member.subject}
                         data-member-subject={member.subject}
                       >
-                        <span>
-                          {member.displayName} (@{member.handle})
-                        </span>
+                        <MemberIdentity member={member} />
                         {member.role === "owner" ||
                         (activeServer.role !== "owner" &&
                           activeServer.role !== "admin") ? (
-                          <strong>
-                            {member.role === "owner"
-                              ? "Owner"
-                              : member.role === "admin"
-                                ? "Admin"
-                                : "Member"}
-                          </strong>
+                          <strong>{memberRoleLabel(member.role)}</strong>
                         ) : (
                           <>
                             <select
@@ -1383,7 +1494,11 @@ function AuthenticatedApp({
           </div>
         )}
       </section>
-      <DirectMessagesPanel session={session} hidden={activeArea !== "home"} />
+      <DirectMessagesPanel
+        session={session}
+        hidden={activeArea !== "home"}
+        onSignOut={() => void logout().then(() => window.location.reload())}
+      />
     </main>
   );
 }

@@ -83,6 +83,12 @@ test("creates the first Server and makes its creator the Owner", async ({
   await expect(page.getByTestId("context-sidebar")).toBeVisible();
   await page.setViewportSize({ width: 1280, height: 720 });
 
+  await page.getByRole("button", { name: "Add Channel" }).click();
+  await page.getByLabel("Channel name").fill("alpha-only");
+  await page
+    .getByRole("button", { name: "Create Channel", exact: true })
+    .click();
+
   await openServerSettings(page);
   await page.getByLabel("New Server name").fill("Beta Server");
   await page.getByRole("button", { name: "Create another Server" }).click();
@@ -102,7 +108,41 @@ test("creates the first Server and makes its creator the Owner", async ({
   await page.getByRole("button", { name: "Save" }).click();
   await closeServerSettings(page);
 
+  await page.evaluate(() => {
+    const mixedServerStates: string[] = [];
+    const observer = new MutationObserver(() => {
+      const server = document.querySelector<HTMLElement>(
+        "[data-testid='active-server-name']",
+      )?.textContent;
+      const channel = document.querySelector<HTMLElement>(
+        "[data-testid='active-channel-name']",
+      )?.textContent;
+      if (server === "Beta Server" && channel?.includes("alpha-only")) {
+        mixedServerStates.push(`${server}:${channel}`);
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    Object.assign(window, {
+      __mixedServerStates: mixedServerStates,
+      __serverObserver: observer,
+    });
+  });
   await page.getByRole("button", { name: "Beta Server" }).click();
+  await expect(page.getByTestId("active-channel-name")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        __mixedServerStates?: string[];
+        __serverObserver?: MutationObserver;
+      };
+      testWindow.__serverObserver?.disconnect();
+      return testWindow.__mixedServerStates ?? [];
+    }),
+  ).toEqual([]);
   await openServerSettings(page);
   await expect(page.getByTestId("durable-value")).toHaveText("beta-only-value");
 
@@ -118,6 +158,7 @@ test("creates the first Server and makes its creator the Owner", async ({
 
   const alphaObserver = await page.context().newPage();
   await alphaObserver.goto(harness.applicationUrl);
+  await alphaObserver.getByRole("button", { name: "Alpha Server" }).click();
   await expect(alphaObserver.getByTestId("active-server-name")).toHaveText(
     "Alpha Server",
   );
@@ -145,6 +186,12 @@ test("creates the first Server and makes its creator the Owner", async ({
   await page.getByRole("button", { name: "Save" }).click();
   await expect(alphaObserver.getByTestId("durable-value")).toHaveText(
     "alpha-live-update",
+  );
+  await closeServerSettings(page);
+  await page.getByRole("button", { name: "Beta Server" }).click();
+  await page.reload();
+  await expect(page.getByTestId("active-server-name")).toHaveText(
+    "Beta Server",
   );
 
   await request.get(

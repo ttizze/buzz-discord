@@ -192,8 +192,16 @@ test("protects a Private direct server Channel at every access path", async ({
   );
   expect(visibilityStatus).toBe(409);
 
+  await expect(owner.getByLabel("Allow outsider @outsider")).toHaveCount(0);
+  await owner.getByRole("button", { name: "Edit Channel Access" }).click();
+  await expect(
+    owner.getByRole("dialog", { name: "Channel Access" }),
+  ).toBeVisible();
   await owner.getByLabel("Allow outsider @outsider").check();
   await owner.getByRole("button", { name: "Save Channel access" }).click();
+  await expect(
+    owner.getByRole("dialog", { name: "Channel Access" }),
+  ).toHaveCount(0);
   await expect(
     outsider.getByRole("button", { name: "leadership" }),
   ).toBeVisible();
@@ -203,6 +211,7 @@ test("protects a Private direct server Channel at every access path", async ({
     outsider.getByText("access granted live", { exact: true }),
   ).toBeVisible();
 
+  await owner.getByRole("button", { name: "Edit Channel Access" }).click();
   await owner.getByLabel("Allow outsider @outsider").uncheck();
   await owner.getByRole("button", { name: "Save Channel access" }).click();
   await expect(

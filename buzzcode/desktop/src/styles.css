@@ -936,7 +936,8 @@ button:disabled {
   box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 45%);
 }
 
-.channel-dialog > header {
+.channel-dialog > header,
+.server-settings > header {
   display: flex;
   padding: 1rem 1.25rem;
   align-items: center;
@@ -945,11 +946,14 @@ button:disabled {
 }
 
 .channel-dialog > header p,
-.channel-dialog > header h2 {
+.channel-dialog > header h2,
+.server-settings > header p,
+.server-settings > header h2 {
   margin: 0;
 }
 
-.channel-dialog > header button {
+.channel-dialog > header button,
+.server-settings > header button {
   padding: 0.25rem 0.6rem;
   color: var(--muted);
   font-size: 1.5rem;
@@ -960,26 +964,6 @@ button:disabled {
   gap: 0.65rem;
   padding: 1rem 1.25rem 1.25rem;
   margin: 0;
-  background: transparent;
-}
-
-.server-settings > header {
-  display: flex;
-  padding: 1rem 1.25rem;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #1f2023;
-}
-
-.server-settings > header p,
-.server-settings > header h2 {
-  margin: 0;
-}
-
-.server-settings > header button {
-  padding: 0.25rem 0.6rem;
-  color: var(--muted);
-  font-size: 1.5rem;
   background: transparent;
 }
 
@@ -1109,9 +1093,26 @@ button:disabled {
   background: var(--surface);
 }
 
-.direct-messages .channel-panel > h3 {
+.dm-channel-header {
+  display: flex;
   min-height: 3rem;
+  padding: 0.6rem 1rem;
+  align-items: center;
+  gap: 0.65rem;
   border-color: #26272b;
+  border-bottom: 1px solid #26272b;
+}
+
+.dm-channel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dm-navigation-toggle {
+  display: none;
+  padding: 0.35rem;
+  color: var(--muted);
+  background: transparent;
 }
 
 .current-user-panel {
@@ -1216,16 +1217,32 @@ button:disabled {
   }
 
   .direct-messages {
-    padding-inline: 0.5rem;
+    padding: 0;
   }
 
   .direct-messages .dm-layout {
+    position: relative;
     grid-template-columns: 1fr;
   }
 
   .dm-sidebar {
-    max-height: 8rem;
-    overflow-y: auto;
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    display: none;
+    width: min(18rem, 100%);
+    max-height: none;
+    box-shadow: 1rem 0 2rem rgb(0 0 0 / 35%);
+  }
+
+  .dm-sidebar[data-open="true"] {
+    display: flex;
+  }
+
+  .dm-navigation-toggle {
+    display: block;
   }
 
   .channel-header p {
