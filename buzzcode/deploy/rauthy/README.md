@@ -49,6 +49,11 @@ docker compose -f deploy/rauthy/docker-compose.yml exec rauthy \
 
 Create users in the Rauthy administration UI. Their activation email lets them choose a Passkey-only account; do not set a password. Losing every Passkey requires an administrator to reset the user's MFA devices.
 
+The Tauri app opens this OIDC flow in the system browser. After Rauthy redirects
+to Buzzcode, the callback page tells the user to return to the app while the app
+redeems a separate, one-time completion token for its session. Keep the callback
+registered as the Buzzcode API URL, not a custom desktop scheme.
+
 Use Resend's SMTP endpoint for email delivery. Keep SMTP credentials and Rauthy encryption keys outside this repository, back up `/app/data`, and test restore and urgent version-patch procedures before public beta.
 
 For the packaged macOS app, configure both `BUZZCODE_APP_URL` and `BUZZCODE_APP_ORIGIN` as `tauri://localhost`; development uses `http://localhost:1420`. Production session cookies are `HttpOnly`, `Secure`, and `SameSite=None`, while Buzzcode rejects protected requests and WebSocket upgrades from any other Origin.

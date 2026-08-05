@@ -4,6 +4,7 @@ import {
   type AuditEntry,
   type AuthSession,
   acceptInvitation,
+  completeDesktopLogin,
   createInvitation,
   createServer,
   deleteServer,
@@ -16,6 +17,7 @@ import {
   readDurableState,
   type Server,
   type ServerMember,
+  startDesktopLogin,
   subscribeToServerEvents,
   transferOwnership,
   updateMemberRole,
@@ -346,10 +348,40 @@ function AuthenticatedApp({
 
 function App() {
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState("");
 
   useEffect(() => {
     void readAuthSession().then(setSession);
   }, []);
+
+  async function signIn() {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      window.location.assign(loginUrl());
+      return;
+    }
+    setSigningIn(true);
+    setSignInError("");
+    try {
+      const login = await startDesktopLogin();
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(login.loginUrl);
+      for (let attempt = 0; attempt < 800; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 750));
+        if (!(await completeDesktopLogin(login.completionToken))) continue;
+        const authenticated = await readAuthSession();
+        setSession(authenticated);
+        setSigningIn(false);
+        return;
+      }
+      throw new Error("sign-in timed out");
+    } catch (error) {
+      setSignInError(
+        error instanceof Error ? error.message : "Buzzcode sign-in failed",
+      );
+      setSigningIn(false);
+    }
+  }
 
   if (session === null) {
     return <main className="shell">Loading…</main>;
@@ -365,10 +397,12 @@ function App() {
           </p>
           <button
             type="button"
-            onClick={() => window.location.assign(loginUrl())}
+            disabled={signingIn}
+            onClick={() => void signIn()}
           >
-            Sign in with a passkey
+            {signingIn ? "Waiting for passkey…" : "Sign in with a passkey"}
           </button>
+          {signInError !== "" && <p role="alert">{signInError}</p>}
         </section>
       </main>
     );

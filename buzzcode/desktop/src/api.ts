@@ -17,6 +17,11 @@ export type AuthSession =
       user: Readonly<{ email: string; displayName: string }>;
     }>;
 
+export type DesktopLogin = Readonly<{
+  loginUrl: string;
+  completionToken: string;
+}>;
+
 export type Server = Readonly<{
   id: string;
   name: string;
@@ -51,7 +56,7 @@ const e2eApiOrigin =
 const apiOrigin =
   e2eApiOrigin ??
   import.meta.env.VITE_BUZZCODE_API_ORIGIN ??
-  "http://127.0.0.1:3100";
+  "http://localhost:3100";
 const websocketOrigin = apiOrigin.replace(/^http/, "ws");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -162,6 +167,20 @@ function parseAuthSession(value: unknown): AuthSession {
   return {
     authenticated: true,
     user: { email: value.user.email, displayName: value.user.displayName },
+  };
+}
+
+function parseDesktopLogin(value: unknown): DesktopLogin {
+  if (
+    !isRecord(value) ||
+    typeof value.loginUrl !== "string" ||
+    typeof value.completionToken !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid desktop login");
+  }
+  return {
+    loginUrl: value.loginUrl,
+    completionToken: value.completionToken,
   };
 }
 
@@ -303,6 +322,30 @@ export async function listAudit(
 
 export function loginUrl(): string {
   return `${apiOrigin}/api/auth/login`;
+}
+
+export async function startDesktopLogin(): Promise<DesktopLogin> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/auth/desktop/start`, {
+      method: "POST",
+      credentials: "include",
+    }),
+    parseDesktopLogin,
+  );
+}
+
+export async function completeDesktopLogin(
+  completionToken: string,
+): Promise<boolean> {
+  const response = await fetch(`${apiOrigin}/api/auth/desktop/complete`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ completionToken }),
+  });
+  if (response.status === 202) return false;
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  return true;
 }
 
 export async function readAuthSession(): Promise<AuthSession> {

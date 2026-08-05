@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State, WebSocketUpgrade, ws::Message},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -145,6 +145,19 @@ struct AuthSession {
 struct AuthCallback {
     code: String,
     state: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopLoginStart {
+    login_url: String,
+    completion_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteDesktopLogin {
+    completion_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,6 +334,8 @@ pub async fn serve(
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/api/auth/login", get(login))
+        .route("/api/auth/desktop/start", post(start_desktop_login))
+        .route("/api/auth/desktop/complete", post(complete_desktop_login))
         .route("/api/auth/callback", get(auth_callback))
         .route("/api/auth/session", get(read_session))
         .route("/api/auth/logout", post(logout))
@@ -385,7 +400,10 @@ async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
-async fn login(State(state): State<Arc<AppState>>) -> Result<Redirect, ApiError> {
+async fn create_oidc_authorization(
+    state: &AppState,
+    desktop_token_hash: Option<&str>,
+) -> Result<String, ApiError> {
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let (url, csrf, nonce) = state
         .oidc
@@ -398,16 +416,48 @@ async fn login(State(state): State<Arc<AppState>>) -> Result<Redirect, ApiError>
         .add_scope(Scope::new("email".to_owned()))
         .set_pkce_challenge(pkce_challenge)
         .url();
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("DELETE FROM oidc_login_attempts WHERE expires_at <= NOW()")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("DELETE FROM desktop_login_attempts WHERE expires_at <= NOW()")
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query(
-        "WITH expired AS (DELETE FROM oidc_login_attempts WHERE expires_at <= NOW()) \
-         INSERT INTO oidc_login_attempts (state, nonce, pkce_verifier) VALUES ($1, $2, $3)",
+        "INSERT INTO oidc_login_attempts (state, nonce, pkce_verifier) VALUES ($1, $2, $3)",
     )
     .bind(csrf.secret())
     .bind(nonce.secret())
     .bind(pkce_verifier.secret())
-    .execute(&state.pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(Redirect::to(url.as_str()))
+    if let Some(token_hash) = desktop_token_hash {
+        sqlx::query("INSERT INTO desktop_login_attempts (token_hash, oidc_state) VALUES ($1, $2)")
+            .bind(token_hash)
+            .bind(csrf.secret())
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.commit().await?;
+    Ok(url.to_string())
+}
+
+async fn login(State(state): State<Arc<AppState>>) -> Result<Redirect, ApiError> {
+    let url = create_oidc_authorization(&state, None).await?;
+    Ok(Redirect::to(&url))
+}
+
+async fn start_desktop_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DesktopLoginStart>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let completion_token = CsrfToken::new_random().secret().to_owned();
+    let login_url = create_oidc_authorization(&state, Some(&token_hash(&completion_token))).await?;
+    Ok(Json(DesktopLoginStart {
+        login_url,
+        completion_token,
+    }))
 }
 
 async fn auth_callback(
@@ -462,6 +512,20 @@ async fn auth_callback(
     .bind(&display_name)
     .execute(&state.pool)
     .await?;
+    let desktop_attempt = sqlx::query(
+        "UPDATE desktop_login_attempts SET oidc_subject = $2 \
+         WHERE oidc_state = $1 AND expires_at > NOW() AND oidc_subject IS NULL",
+    )
+    .bind(&callback.state)
+    .bind(&subject)
+    .execute(&state.pool)
+    .await?;
+    if desktop_attempt.rows_affected() == 1 {
+        return Ok(Html(
+            "<!doctype html><html><body><h1>Buzzcode sign-in complete</h1><p>You can return to Buzzcode.</p></body></html>",
+        )
+        .into_response());
+    }
     let token = CsrfToken::new_random().secret().to_owned();
     sqlx::query("INSERT INTO sessions (token_hash, oidc_subject) VALUES ($1, $2)")
         .bind(token_hash(&token))
@@ -469,6 +533,50 @@ async fn auth_callback(
         .execute(&state.pool)
         .await?;
     let mut response = Redirect::to(&state.auth.app_url).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(&token, state.auth.secure_cookie))
+            .map_err(|_| ApiError::InvalidAuthentication)?,
+    );
+    Ok(response)
+}
+
+async fn complete_desktop_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<CompleteDesktopLogin>,
+) -> Result<Response, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let completion_hash = token_hash(input.completion_token.trim());
+    let subject = sqlx::query_scalar::<_, String>(
+        "DELETE FROM desktop_login_attempts \
+         WHERE token_hash = $1 AND expires_at > NOW() AND oidc_subject IS NOT NULL \
+         RETURNING oidc_subject",
+    )
+    .bind(&completion_hash)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(subject) = subject else {
+        let pending = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM desktop_login_attempts \
+             WHERE token_hash = $1 AND expires_at > NOW())",
+        )
+        .bind(completion_hash)
+        .fetch_one(&state.pool)
+        .await?;
+        return if pending {
+            Ok(StatusCode::ACCEPTED.into_response())
+        } else {
+            Err(ApiError::NotFound)
+        };
+    };
+    let token = CsrfToken::new_random().secret().to_owned();
+    sqlx::query("INSERT INTO sessions (token_hash, oidc_subject) VALUES ($1, $2)")
+        .bind(token_hash(&token))
+        .bind(subject)
+        .execute(&state.pool)
+        .await?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&session_cookie(&token, state.auth.secure_cookie))

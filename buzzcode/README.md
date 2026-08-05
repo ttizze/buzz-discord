@@ -31,9 +31,14 @@ Configure and start Rauthy before `just dev`; see
 `deploy/rauthy/README.md`. `just auth-smoke` checks live discovery, S256
 support, and the Buzzcode-to-Rauthy redirect without completing a user login.
 
-This starts the local PostgreSQL database, the Axum server on
-`http://127.0.0.1:3100`, and the Tauri desktop. The database remains running so
+This starts the local PostgreSQL database, the Axum server at
+`http://localhost:3100`, and the Tauri desktop. The database remains running so
 state survives application restarts. Stop it explicitly with `just db-stop`.
+
+Desktop sign-in opens Rauthy in the system browser for the Passkey ceremony.
+After authentication, the browser displays a completion page and the desktop
+automatically receives its one-time session; no credentials or completion token
+are placed in the browser URL.
 
 For split terminals, run `just server` and `just desktop` after `just db-start`.
 
