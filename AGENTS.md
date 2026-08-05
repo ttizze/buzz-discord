@@ -115,6 +115,22 @@ Additional rules:
 - Do not introduce new `unwrap()` or `expect()` in production paths — use `?` and proper error types
 - New public API must have doc comments
 
+### Buzzcode TDD and live completion gate
+
+For every Buzzcode implementation task, use the user-visible application seam
+defined in `buzzcode`'s testing decisions unless the ticket establishes a
+different public seam. Before implementation, add or change a behavioral test
+for the exact acceptance slice and observe it fail. Make the smallest change
+that makes it pass, then run `cd buzzcode && nix develop --command just test`.
+
+Do not call a Buzzcode task complete, commit it, or close its issue based only
+on automated tests. Start or restart the affected development services and
+verify the result through the running Tauri application. For startup,
+reconnection, or other transient paths, deliberately restart the relevant
+service and prove that the application recovers. Record what was exercised and
+what was visibly observed. If the running UI cannot be inspected, state that
+limitation and do not claim live or visual verification.
+
 ---
 
 ## Key Patterns
