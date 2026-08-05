@@ -51,6 +51,28 @@ test("rejects unauthenticated access to protected application data", async ({
   expect(response.status()).toBe(401);
 });
 
+test("recovers when the initial session request happens during a server restart", async ({
+  page,
+}) => {
+  let firstSessionRequest = true;
+  await page.route("**/api/auth/session", async (route) => {
+    if (firstSessionRequest) {
+      firstSessionRequest = false;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(harness.applicationUrl);
+  await expect(
+    page.getByText("Connecting to Buzzcode…", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Sign in to Buzzcode" }),
+  ).toBeVisible({ timeout: 3_000 });
+});
+
 for (const tokenMode of ["expired", "invalid-signature", "missing-email"]) {
   test(`rejects a ${tokenMode} identity assertion`, async ({ request }) => {
     const { response } = await completeOidcFlow(request, tokenMode);

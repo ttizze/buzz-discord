@@ -822,11 +822,30 @@ function AuthenticatedApp({
 
 function App() {
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [sessionConnectionFailed, setSessionConnectionFailed] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState("");
 
   useEffect(() => {
-    void readAuthSession().then(setSession);
+    let active = true;
+    let retryTimer: number | undefined;
+    const loadSession = async () => {
+      try {
+        const loaded = await readAuthSession();
+        if (!active) return;
+        setSessionConnectionFailed(false);
+        setSession(loaded);
+      } catch {
+        if (!active) return;
+        setSessionConnectionFailed(true);
+        retryTimer = window.setTimeout(() => void loadSession(), 500);
+      }
+    };
+    void loadSession();
+    return () => {
+      active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   async function signIn() {
@@ -858,7 +877,11 @@ function App() {
   }
 
   if (session === null) {
-    return <main className="shell">Loading…</main>;
+    return (
+      <main className="shell">
+        {sessionConnectionFailed ? "Connecting to Buzzcode…" : "Loading…"}
+      </main>
+    );
   }
   if (!session.authenticated) {
     return (
