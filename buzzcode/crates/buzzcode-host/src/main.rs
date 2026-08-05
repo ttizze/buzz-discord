@@ -65,6 +65,7 @@ enum HostMessage {
     FolderBound {
         request_id: String,
         path: String,
+        name: String,
     },
     AgentOpened {
         run_id: String,
@@ -315,11 +316,25 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                                     .is_dir()
                                     .then_some(canonical)
                                     .context("Project Folder is not a directory")
+                            })
+                            .and_then(|canonical| {
+                                let name = canonical
+                                    .file_name()
+                                    .filter(|name| !name.is_empty())
+                                    .context("Project Folder has no name")?
+                                    .to_string_lossy()
+                                    .into_owned();
+                                anyhow::ensure!(
+                                    name.chars().count() <= 100,
+                                    "Project Folder name is too long"
+                                );
+                                Ok((canonical, name))
                             });
                         match result {
-                            Ok(path) => outbound_tx.send(HostMessage::FolderBound {
+                            Ok((path, name)) => outbound_tx.send(HostMessage::FolderBound {
                                 request_id,
                                 path: path.to_string_lossy().into_owned(),
+                                name,
                             })?,
                             Err(error) => outbound_tx.send(HostMessage::Error {
                                 request_id: Some(request_id),

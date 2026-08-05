@@ -37,7 +37,7 @@ The standard server role, permitted to read and post in open areas, use private 
 _Avoid_: Custom role, guest
 
 **Project**:
-A named work context bound to one Computer and one Project Folder on that Computer. A Personal Project supplies context to an Agent Direct Message, while a Server Project groups Channels; neither owns an Agent or stores Messages itself.
+A work context created by selecting one Project Folder on one Computer. Its display name is the selected folder's name and is not entered separately. A Personal Project supplies context to an Agent Direct Message, while a Server Project groups Channels; neither owns an Agent or stores Messages itself.
 _Avoid_: Workspace, channel, repository, conversation
 
 **Personal Project**:

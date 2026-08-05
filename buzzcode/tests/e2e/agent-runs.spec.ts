@@ -112,7 +112,6 @@ test("routes a Project Channel Agent Mention through its bound Computer over ACP
             credentials: "include",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              name: "ACP Project",
               computerId,
               folderPath,
             }),

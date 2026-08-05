@@ -217,7 +217,6 @@ function AuthenticatedApp({
   const settingsDialog = useModalDialog();
   const channelDialog = useModalDialog();
   const channelAccessDialog = useModalDialog();
-  const projectDialog = useModalDialog();
   const projectChannelDialog = useModalDialog();
   const [servers, setServers] = useState<readonly Server[] | null>(null);
   const [activeServer, setActiveServer] = useState<Server | null>(null);
@@ -234,8 +233,6 @@ function AuthenticatedApp({
   const [channelAccessMembers, setChannelAccessMembers] = useState<
     readonly string[]
   >([]);
-  const [projectName, setProjectName] = useState("");
-  const [projectFolderPath, setProjectFolderPath] = useState("");
   const [currentComputer, setCurrentComputer] = useState<Computer | null>(null);
   const [channelProject, setChannelProject] = useState<ServerProject | null>(
     null,
@@ -709,8 +706,6 @@ function AuthenticatedApp({
       setReplyingTo(null);
       setEditingMessageId(null);
       setChannelAccessMembers([]);
-      setProjectName("");
-      setProjectFolderPath("");
       setChannelProject(null);
       setProjectChannelName("");
     }
@@ -745,23 +740,16 @@ function AuthenticatedApp({
     channelDialog.close();
   }
 
-  async function selectProjectFolder() {
-    const folderPath = await chooseProjectFolder();
-    if (folderPath !== null) setProjectFolderPath(folderPath);
-  }
-
   async function addProject() {
     if (activeServer === null || currentComputer === null) return;
+    const folderPath = await chooseProjectFolder();
+    if (folderPath === null) return;
     const project = await createProject(
       activeServer.id,
-      projectName,
       currentComputer.id,
-      projectFolderPath,
+      folderPath,
     );
     setProjects((current) => [...current, project]);
-    setProjectName("");
-    setProjectFolderPath("");
-    projectDialog.close();
   }
 
   async function addProjectChannel() {
@@ -1099,11 +1087,7 @@ function AuthenticatedApp({
                   type="button"
                   aria-label="Add Project"
                   disabled={currentComputer === null}
-                  onClick={(event) => {
-                    setProjectName("");
-                    setProjectFolderPath("");
-                    projectDialog.open(event.currentTarget);
-                  }}
+                  onClick={() => void addProject()}
                 >
                   +
                 </button>
@@ -1583,64 +1567,6 @@ function AuthenticatedApp({
                   onClick={() => void addChannel()}
                 >
                   Create Channel
-                </button>
-              </div>
-            </section>
-          </div>
-        )}
-        {projectDialog.isOpen && (
-          <div className="settings-backdrop">
-            <section
-              ref={projectDialog.dialogRef}
-              className="channel-dialog project-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="create-project-heading"
-            >
-              <header>
-                <div>
-                  <p className="eyebrow">{activeServer.name}</p>
-                  <h2 id="create-project-heading">Create Open Project</h2>
-                </div>
-                <button
-                  ref={projectDialog.closeButtonRef}
-                  type="button"
-                  aria-label="Close Create Open Project"
-                  onClick={projectDialog.close}
-                >
-                  ×
-                </button>
-              </header>
-              <div className="channel-create">
-                <label htmlFor="project-name">Project name</label>
-                <input
-                  id="project-name"
-                  value={projectName}
-                  maxLength={100}
-                  onChange={(event) => setProjectName(event.target.value)}
-                />
-                <span>Project Folder</span>
-                <button
-                  type="button"
-                  onClick={() => void selectProjectFolder()}
-                >
-                  Choose Project Folder
-                </button>
-                {projectFolderPath !== "" && (
-                  <output data-testid="selected-project-folder">
-                    {projectFolderPath}
-                  </output>
-                )}
-                <button
-                  type="button"
-                  disabled={
-                    projectName.trim() === "" ||
-                    projectFolderPath === "" ||
-                    currentComputer === null
-                  }
-                  onClick={() => void addProject()}
-                >
-                  Create Open Project
                 </button>
               </div>
             </section>

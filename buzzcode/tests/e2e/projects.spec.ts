@@ -34,7 +34,7 @@ test.afterAll(async () => {
   await harness.stop();
 });
 
-test("adds an Open Project from a non-Git folder on the current Computer", async ({
+test("adds the selected folder as an Open Project without asking for a name", async ({
   browser,
   page,
 }) => {
@@ -120,22 +120,10 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       page.getByRole("button", { name: "Add Project" }),
     ).toBeEnabled();
     await page.getByRole("button", { name: "Add Project" }).click();
+    await expect(page.getByLabel("Project name")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(
-      page.getByRole("dialog", { name: "Create Open Project" }),
-    ).toBeVisible();
-    await expect(page.getByLabel("Remote Environment")).toHaveCount(0);
-    await expect(page.getByLabel("Git repository")).toHaveCount(0);
-
-    await page.getByLabel("Project name").fill("Local Folder Project");
-    await page.getByRole("button", { name: "Choose Project Folder" }).click();
-    await expect(page.getByTestId("selected-project-folder")).toHaveText(
-      folderPath,
-    );
-    await page
-      .getByRole("button", { name: "Create Open Project", exact: true })
-      .click();
-    await expect(
-      page.getByRole("heading", { name: "Local Folder Project" }),
+      page.getByRole("heading", { name: "ordinary-folder" }),
     ).toBeVisible();
 
     const projects = await page.evaluate(
@@ -151,7 +139,7 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       status: 200,
       body: [
         expect.objectContaining({
-          name: "Local Folder Project",
+          name: "ordinary-folder",
           computerId: expect.any(String),
           computerName: "Owner Mac",
           computerStatus: "online",
@@ -179,7 +167,6 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
             credentials: "include",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              name: "Same Computer Project",
               computerId,
               folderPath,
             }),
@@ -205,7 +192,7 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
     });
 
     await page
-      .getByRole("button", { name: "Add Channel to Local Folder Project" })
+      .getByRole("button", { name: "Add Channel to ordinary-folder" })
       .click();
     await page.getByLabel("Project Channel name").fill("implementation");
     await page
@@ -278,7 +265,7 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
       await member.getByLabel("Invitation code").fill(invitation.token);
       await member.getByRole("button", { name: "Join Server" }).click();
       await expect(
-        member.getByRole("heading", { name: "Local Folder Project" }),
+        member.getByRole("heading", { name: "ordinary-folder" }),
       ).toBeVisible();
       await expect(
         member.getByRole("button", { name: "implementation" }),
@@ -294,7 +281,6 @@ test("adds an Open Project from a non-Git folder on the current Computer", async
               credentials: "include",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({
-                name: "Member Project",
                 computerId,
                 folderPath,
               }),

@@ -51,6 +51,7 @@ enum ClientHostMessage {
     FolderBound {
         request_id: String,
         path: String,
+        name: String,
     },
     AgentOpened {
         run_id: String,
@@ -471,7 +472,7 @@ pub(crate) async fn bind_project_folder(
     state: &AppState,
     computer_id: &str,
     path: &str,
-) -> Result<String, ApiError> {
+) -> Result<(String, String), ApiError> {
     let host = connected_host(state, computer_id).await?;
     let request_id = CsrfToken::new_random().secret().to_owned();
     let mut inbound = host.inbound.subscribe();
@@ -487,7 +488,8 @@ pub(crate) async fn bind_project_folder(
                 Ok(ClientHostMessage::FolderBound {
                     request_id: response_id,
                     path,
-                }) if response_id == request_id => return Ok(path),
+                    name,
+                }) if response_id == request_id => return Ok((path, name)),
                 Ok(ClientHostMessage::Error {
                     request_id: Some(response_id),
                     ..

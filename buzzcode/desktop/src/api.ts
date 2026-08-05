@@ -1140,7 +1140,6 @@ export async function listProjects(
 
 export async function createProject(
   serverId: string,
-  name: string,
   computerId: string,
   folderPath: string,
 ): Promise<ServerProject> {
@@ -1151,7 +1150,7 @@ export async function createProject(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, computerId, folderPath }),
+        body: JSON.stringify({ computerId, folderPath }),
       },
     ),
     parseServerProject,

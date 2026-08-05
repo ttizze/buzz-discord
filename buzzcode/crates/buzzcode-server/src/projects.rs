@@ -30,7 +30,6 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateProject {
-    name: String,
     computer_id: String,
     folder_path: String,
 }
@@ -127,15 +126,9 @@ async fn create_project(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_manager(&state.pool, &subject, &server_id).await?;
-    let name = input.name.trim();
     let computer_id = input.computer_id.trim();
     let folder_path = input.folder_path.trim();
-    if name.is_empty()
-        || name.chars().count() > 100
-        || computer_id.is_empty()
-        || folder_path.is_empty()
-        || folder_path.len() > 4096
-    {
+    if computer_id.is_empty() || folder_path.is_empty() || folder_path.len() > 4096 {
         return Err(ApiError::InvalidRequest);
     }
     let computer_name = sqlx::query_scalar::<_, String>(
@@ -147,7 +140,10 @@ async fn create_project(
     .fetch_optional(&state.pool)
     .await?
     .ok_or(ApiError::NotFound)?;
-    let folder_path = bind_project_folder(&state, computer_id, folder_path).await?;
+    let (folder_path, name) = bind_project_folder(&state, computer_id, folder_path).await?;
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(ApiError::InvalidRequest);
+    }
     let id = CsrfToken::new_random().secret().to_owned();
     let mut transaction = state.pool.begin().await?;
     let inserted = sqlx::query(
@@ -158,7 +154,7 @@ async fn create_project(
     .bind(&id)
     .bind(&server_id)
     .bind(computer_id)
-    .bind(name)
+    .bind(&name)
     .bind(&folder_path)
     .bind(&subject)
     .execute(&mut *transaction)
@@ -182,7 +178,7 @@ async fn create_project(
     transaction.commit().await?;
     let project = ProjectSummary {
         id,
-        name: name.to_owned(),
+        name,
         computer_id: computer_id.to_owned(),
         computer_name,
         computer_status: "online".to_owned(),

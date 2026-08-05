@@ -142,26 +142,19 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
         };
         const first = await createServer("VPS Project Server One");
         const second = await createServer("VPS Project Server Two");
-        const createProject = async (
-          serverId: string,
-          name: string,
-          folderPath: string,
-        ) =>
+        const createProject = async (serverId: string, folderPath: string) =>
           fetch(`${origin}/api/servers/${serverId}/projects`, {
             method: "POST",
             credentials: "include",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              name,
               computerId,
               folderPath,
             }),
           });
         return [
-          (await createProject(first.id, "First VPS Project", folderPaths[0]))
-            .status,
-          (await createProject(second.id, "Second VPS Project", folderPaths[1]))
-            .status,
+          (await createProject(first.id, folderPaths[0])).status,
+          (await createProject(second.id, folderPaths[1])).status,
         ];
       },
       {
