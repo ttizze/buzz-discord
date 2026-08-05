@@ -42,6 +42,10 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await expect(owner.getByText("member@example.com")).toHaveCount(0);
   await expect(member.getByRole("button", { name: "owner" })).toBeVisible();
   await expect(member.getByRole("img", { name: "owner avatar" })).toBeVisible();
+  const singleDirectMessageRow = await member
+    .getByRole("button", { name: "owner" })
+    .boundingBox();
+  expect(singleDirectMessageRow?.height).toBeLessThanOrEqual(48);
   await member.getByRole("button", { name: "owner" }).click();
   await expect(member.getByTestId("dm-realtime-status")).toHaveText(
     "Connected",

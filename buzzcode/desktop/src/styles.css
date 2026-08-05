@@ -1086,6 +1086,7 @@ button:disabled {
 .dm-sidebar > nav {
   flex: 1;
   overflow-y: auto;
+  align-content: start;
 }
 
 .dm-sidebar > nav button {
