@@ -396,18 +396,6 @@ button:disabled {
   margin: 0;
 }
 
-.mention-chips {
-  display: flex;
-  flex-basis: 100%;
-  gap: 0.4rem;
-}
-
-.mention-chips button {
-  padding: 0.35rem 0.55rem;
-  color: #d9e7fa;
-  background: #263b5a;
-}
-
 .mention-picker-results {
   position: absolute;
   z-index: 2;

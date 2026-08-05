@@ -64,21 +64,20 @@ test("chats in an Open Channel with durable flat Replies", async ({
     mentionTarget.getByRole("button", { name: "general" }),
   ).toBeVisible();
 
-  await owner.getByLabel("Message #general").fill("@Mention");
+  await owner.getByLabel("Message #general").fill("👋 Thanks @Mention");
   await owner
     .getByRole("button", { name: "Mention Me @mention_target" })
     .click();
-  await expect(
-    owner.getByRole("button", {
-      name: "Remove mention Mention Me @mention_target",
-    }),
-  ).toBeVisible();
-  await owner.getByLabel("Message #general").fill("Please check this");
+  await expect(owner.getByLabel("Message #general")).toHaveValue(
+    "👋 Thanks @Mention Me",
+  );
   await owner.getByRole("button", { name: "Send" }).click();
   const mentionedMessage = mentionTarget.locator("[data-message-id]", {
-    hasText: "Please check this",
+    hasText: "👋 Thanks @Mention Me",
   });
-  await expect(mentionedMessage).toContainText("@Mention Me");
+  await expect(mentionedMessage.locator(":scope > p")).toHaveText(
+    "👋 Thanks @Mention Me",
+  );
   const mentionedMessageId =
     await mentionedMessage.getAttribute("data-message-id");
   const mentionChannelId = await owner
@@ -104,8 +103,42 @@ test("chats in an Open Channel with durable flat Replies", async ({
       userId: "rauthy-mention_target",
       handle: "mention_target",
       displayName: "Mention Me",
+      start: 9,
+      end: 20,
     },
   ]);
+  const ownerMentionedMessage = owner.locator(
+    `[data-message-id="${mentionedMessageId}"]`,
+  );
+  await ownerMentionedMessage
+    .getByRole("button", { name: "Edit message by owner" })
+    .click();
+  await ownerMentionedMessage
+    .getByRole("textbox", { name: "Edit message by owner" })
+    .fill("👋 Thanks @Mention Me edited");
+  await ownerMentionedMessage
+    .getByRole("button", { name: "Save edit" })
+    .click();
+  await expect(mentionedMessage.locator(":scope > p")).toHaveText(
+    "👋 Thanks @Mention Me edited",
+  );
+  await mentionedMessage
+    .getByRole("button", { name: "Reply to owner" })
+    .click();
+  await mentionTarget.getByLabel("Message #general").fill("Mention reply");
+  await mentionTarget.getByRole("button", { name: "Send" }).click();
+  await expect(
+    owner.locator("[data-message-id]", { hasText: "Mention reply" }),
+  ).toContainText("👋 Thanks @Mention Me edited");
+  await owner.getByLabel("Message #general").fill("@Mention");
+  await owner
+    .getByRole("button", { name: "Mention Me @mention_target" })
+    .click();
+  await expect(owner.getByLabel("Message #general")).toHaveValue("@Mention Me");
+  await owner.getByRole("button", { name: "Send" }).click();
+  await expect(
+    mentionTarget.locator(".message > p").filter({ hasText: /^@Mention Me$/ }),
+  ).toBeVisible();
   const inaccessibleMentionStatus = await owner.evaluate(
     async ({ apiOrigin, serverId, channelId }) =>
       (
@@ -116,8 +149,8 @@ test("chats in an Open Channel with durable flat Replies", async ({
             credentials: "include",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              content: "forged mention",
-              mentionUserIds: ["rauthy-intruder"],
+              content: "@intruder forged mention",
+              mentions: [{ userId: "rauthy-intruder", start: 0, end: 9 }],
             }),
           },
         )

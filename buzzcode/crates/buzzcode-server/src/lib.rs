@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -308,14 +308,15 @@ struct CreateMessage {
     content: String,
     reply_to_message_id: Option<String>,
     #[serde(default)]
-    mention_user_ids: Vec<String>,
+    mentions: Vec<MentionInput>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct EditMessage {
     pub(crate) content: String,
     #[serde(default)]
-    pub(crate) mention_user_ids: Vec<String>,
+    mentions: Option<Vec<MentionInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -370,35 +371,142 @@ struct MentionSummary {
     user_id: String,
     handle: String,
     display_name: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct MentionInput {
+    user_id: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredMention {
+    user_id: String,
+    handle: String,
+    display_name: String,
+    start: usize,
+    end: usize,
 }
 
 fn prepare_mentioned_content(
     content: &str,
-    requested_user_ids: Vec<String>,
-) -> Result<(String, Vec<String>), ApiError> {
-    let content = content.trim();
-    let mut mention_user_ids = Vec::new();
-    for user_id in requested_user_ids {
-        if !mention_user_ids.contains(&user_id) {
-            mention_user_ids.push(user_id);
+    mut mentions: Vec<MentionInput>,
+) -> Result<(String, Vec<MentionInput>), ApiError> {
+    if content.trim().is_empty() || content.chars().count() > 4000 || mentions.len() > 20 {
+        return Err(ApiError::InvalidRequest);
+    }
+    mentions.sort_by_key(|mention| mention.start);
+    let content_length = content.chars().count();
+    let mut previous_end = 0;
+    for mention in &mentions {
+        if mention.start < previous_end
+            || mention.start >= mention.end
+            || mention.end > content_length
+        {
+            return Err(ApiError::InvalidRequest);
         }
+        previous_end = mention.end;
     }
-    if content.is_empty() || content.chars().count() > 4000 || mention_user_ids.len() > 20 {
+    Ok((content.to_owned(), mentions))
+}
+
+async fn require_mentions_accessible(
+    transaction: &mut Transaction<'_, Postgres>,
+    server_id: &str,
+    channel_id: &str,
+    mentions: &[MentionInput],
+) -> Result<HashMap<String, String>, ApiError> {
+    if mentions.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mentioned_subjects = mentions
+        .iter()
+        .map(|mention| mention.user_id.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let accessible = sqlx::query_as::<_, (String, String)>(
+        "SELECT users.oidc_subject, users.display_name FROM users \
+         WHERE users.oidc_subject = ANY($1) \
+         AND user_can_access_channel($2, $3, users.oidc_subject) \
+         AND EXISTS (SELECT 1 FROM servers \
+             LEFT JOIN server_members ON server_members.server_id = servers.id \
+                 AND server_members.oidc_subject = users.oidc_subject \
+             WHERE servers.id = $3 AND (servers.owner_subject = users.oidc_subject \
+                 OR server_members.oidc_subject IS NOT NULL))",
+    )
+    .bind(&mentioned_subjects)
+    .bind(channel_id)
+    .bind(server_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if accessible.len() != mentioned_subjects.len() {
         return Err(ApiError::InvalidRequest);
     }
-    let mention_prefix = (0..mention_user_ids.len())
-        .map(|ordinal| format!("<@{ordinal}>"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let stored_content = if mention_prefix.is_empty() {
-        content.to_owned()
-    } else {
-        format!("{mention_prefix} {content}")
-    };
-    if stored_content.chars().count() > 4000 {
+    Ok(accessible.into_iter().collect())
+}
+
+fn canonicalize_mentioned_content(
+    content: &str,
+    mentions: &[MentionInput],
+    display_names: &HashMap<String, String>,
+) -> Result<(String, Vec<MentionInput>), ApiError> {
+    let characters = content.chars().collect::<Vec<_>>();
+    let mut canonical = String::new();
+    let mut canonical_mentions = Vec::with_capacity(mentions.len());
+    let mut cursor = 0;
+    for mention in mentions {
+        canonical.extend(characters[cursor..mention.start].iter());
+        let start = canonical.chars().count();
+        let display_name = display_names
+            .get(&mention.user_id)
+            .ok_or(ApiError::InvalidRequest)?;
+        canonical.push('@');
+        canonical.push_str(display_name);
+        let end = canonical.chars().count();
+        canonical_mentions.push(MentionInput {
+            user_id: mention.user_id.clone(),
+            start,
+            end,
+        });
+        cursor = mention.end;
+    }
+    canonical.extend(characters[cursor..].iter());
+    if canonical.chars().count() > 4000 {
         return Err(ApiError::InvalidRequest);
     }
-    Ok((stored_content, mention_user_ids))
+    Ok((canonical, canonical_mentions))
+}
+
+async fn replace_message_mentions(
+    transaction: &mut Transaction<'_, Postgres>,
+    message_id: &str,
+    mentions: &[MentionInput],
+) -> Result<(), ApiError> {
+    sqlx::query("DELETE FROM channel_message_mentions WHERE message_id = $1")
+        .bind(message_id)
+        .execute(&mut **transaction)
+        .await?;
+    for (ordinal, mention) in mentions.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO channel_message_mentions \
+             (message_id, mentioned_subject, ordinal, start_index, end_index) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(message_id)
+        .bind(&mention.user_id)
+        .bind(ordinal as i32)
+        .bind(mention.start as i32)
+        .bind(mention.end as i32)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1636,15 +1744,77 @@ type MessageRow = (
     Option<String>,
     bool,
     sqlx::types::Json<Vec<ReactionSummary>>,
-    sqlx::types::Json<Vec<MentionSummary>>,
+    sqlx::types::Json<Vec<StoredMention>>,
+    sqlx::types::Json<Vec<StoredMention>>,
 );
 
+fn resolve_mentioned_content(
+    content: Option<String>,
+    stored_mentions: &[StoredMention],
+) -> (Option<String>, Vec<MentionSummary>) {
+    let Some(content) = content else {
+        return (None, Vec::new());
+    };
+    if !stored_mentions.is_empty()
+        && stored_mentions
+            .iter()
+            .all(|mention| mention.start == 0 && mention.end == 0)
+    {
+        let mut resolved = content;
+        let mut mentions = Vec::with_capacity(stored_mentions.len());
+        for (ordinal, mention) in stored_mentions.iter().enumerate() {
+            let token = format!("<@{ordinal}>");
+            let Some(byte_start) = resolved.find(&token) else {
+                continue;
+            };
+            let start = resolved[..byte_start].chars().count();
+            let label = format!("@{}", mention.display_name);
+            resolved.replace_range(byte_start..byte_start + token.len(), &label);
+            mentions.push(MentionSummary {
+                user_id: mention.user_id.clone(),
+                handle: mention.handle.clone(),
+                display_name: mention.display_name.clone(),
+                start,
+                end: start + label.chars().count(),
+            });
+        }
+        return (Some(resolved), mentions);
+    }
+    let characters = content.chars().collect::<Vec<_>>();
+    let mut resolved = String::new();
+    let mut mentions = Vec::with_capacity(stored_mentions.len());
+    let mut cursor = 0;
+    for mention in stored_mentions {
+        if mention.start < cursor || mention.end > characters.len() || mention.start >= mention.end
+        {
+            return (Some(content), Vec::new());
+        }
+        resolved.extend(characters[cursor..mention.start].iter());
+        let start = resolved.chars().count();
+        resolved.push('@');
+        resolved.push_str(&mention.display_name);
+        let end = resolved.chars().count();
+        mentions.push(MentionSummary {
+            user_id: mention.user_id.clone(),
+            handle: mention.handle.clone(),
+            display_name: mention.display_name.clone(),
+            start,
+            end,
+        });
+        cursor = mention.end;
+    }
+    resolved.extend(characters[cursor..].iter());
+    (Some(resolved), mentions)
+}
+
 fn message_from_row(row: MessageRow) -> ChannelMessage {
+    let (content, mentions) = resolve_mentioned_content(row.3, &row.14.0);
+    let (reply_content, _) = resolve_mentioned_content(row.10, &row.15.0);
     ChannelMessage {
         id: row.0,
         sequence: row.1,
         channel_id: row.2,
-        content: row.3,
+        content,
         author_subject: row.4,
         author_display_name: row.5,
         created_at: row.6,
@@ -1652,12 +1822,12 @@ fn message_from_row(row: MessageRow) -> ChannelMessage {
         deleted_at: row.8,
         reply_to: row.9.map(|id| ReplyTarget {
             id,
-            content: row.10,
+            content: reply_content,
             author_display_name: row.11.unwrap_or_default(),
             deleted: row.12,
         }),
         reactions: row.13.0,
-        mentions: row.14.0,
+        mentions,
     }
 }
 
@@ -1675,10 +1845,18 @@ const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.chann
          ) grouped), '[]'::JSONB) \
      , COALESCE((SELECT JSONB_AGG(JSONB_BUILD_OBJECT( \
          'userId', mentioned.oidc_subject, 'handle', mentioned.handle, \
-         'displayName', mentioned.display_name) ORDER BY mention.ordinal) \
+         'displayName', mentioned.display_name, 'start', mention.start_index, \
+         'end', mention.end_index) ORDER BY mention.ordinal) \
          FROM channel_message_mentions mention \
          JOIN users mentioned ON mentioned.oidc_subject = mention.mentioned_subject \
          WHERE mention.message_id = message.id), '[]'::JSONB) \
+     , COALESCE((SELECT JSONB_AGG(JSONB_BUILD_OBJECT( \
+         'userId', mentioned.oidc_subject, 'handle', mentioned.handle, \
+         'displayName', mentioned.display_name, 'start', mention.start_index, \
+         'end', mention.end_index) ORDER BY mention.ordinal) \
+         FROM channel_message_mentions mention \
+         JOIN users mentioned ON mentioned.oidc_subject = mention.mentioned_subject \
+         WHERE mention.message_id = reply.id), '[]'::JSONB) \
      FROM channel_messages message \
      JOIN users author ON author.oidc_subject = message.author_subject \
      LEFT JOIN channel_messages reply ON reply.id = message.reply_to_message_id \
@@ -1851,8 +2029,7 @@ async fn create_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let (stored_content, mention_user_ids) =
-        prepare_mentioned_content(&input.content, input.mention_user_ids)?;
+    let (requested_content, mentions) = prepare_mentioned_content(&input.content, input.mentions)?;
     let mut transaction = state.pool.begin().await?;
     lock_channel_and_require_access(
         &mut transaction,
@@ -1874,26 +2051,10 @@ async fn create_message(
             return Err(ApiError::InvalidRequest);
         }
     }
-    if !mention_user_ids.is_empty() {
-        let accessible_mentions = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM UNNEST($1::TEXT[]) AS mentions(mention_subject) \
-             WHERE user_can_access_channel($2, $3, mentions.mention_subject) \
-             AND EXISTS (SELECT 1 FROM servers \
-                 LEFT JOIN server_members ON server_members.server_id = servers.id \
-                     AND server_members.oidc_subject = mentions.mention_subject \
-                 WHERE servers.id = $3 AND ( \
-                     servers.owner_subject = mentions.mention_subject \
-                     OR server_members.oidc_subject IS NOT NULL))",
-        )
-        .bind(&mention_user_ids)
-        .bind(&channel_id)
-        .bind(&server_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        if accessible_mentions != mention_user_ids.len() as i64 {
-            return Err(ApiError::InvalidRequest);
-        }
-    }
+    let display_names =
+        require_mentions_accessible(&mut transaction, &server_id, &channel_id, &mentions).await?;
+    let (stored_content, mentions) =
+        canonicalize_mentioned_content(&requested_content, &mentions, &display_names)?;
     let id = CsrfToken::new_random().secret().to_owned();
     sqlx::query(
         "INSERT INTO channel_messages \
@@ -1908,17 +2069,7 @@ async fn create_message(
     .bind(input.reply_to_message_id)
     .execute(&mut *transaction)
     .await?;
-    for (ordinal, mentioned_subject) in mention_user_ids.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO channel_message_mentions \
-             (message_id, mentioned_subject, ordinal) VALUES ($1, $2, $3)",
-        )
-        .bind(&id)
-        .bind(mentioned_subject)
-        .bind(ordinal as i32)
-        .execute(&mut *transaction)
-        .await?;
-    }
+    replace_message_mentions(&mut transaction, &id, &mentions).await?;
     transaction.commit().await?;
     let message = load_message(&state.pool, &subject, &channel_id, &id).await?;
     let _ = state.changes.send(ServerEvent::MessageCreated {
@@ -1959,8 +2110,6 @@ async fn edit_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let (stored_content, mention_user_ids) =
-        prepare_mentioned_content(&input.content, input.mention_user_ids)?;
     let mut transaction = state.pool.begin().await?;
     lock_channel_and_require_access(
         &mut transaction,
@@ -1970,8 +2119,8 @@ async fn edit_message(
         ChannelLock::Exclusive,
     )
     .await?;
-    let author = sqlx::query_scalar::<_, String>(
-        "SELECT author_subject FROM channel_messages \
+    let (author, current_stored_content) = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT author_subject, content FROM channel_messages \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL",
     )
     .bind(&message_id)
@@ -1982,33 +2131,86 @@ async fn edit_message(
     if author != subject {
         return Err(ApiError::Forbidden);
     }
-    if !mention_user_ids.is_empty() {
-        let accessible_mentions = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM UNNEST($1::TEXT[]) AS mentions(mention_subject) \
-             WHERE user_can_access_channel($2, $3, mentions.mention_subject) \
-             AND EXISTS (SELECT 1 FROM servers \
-                 LEFT JOIN server_members ON server_members.server_id = servers.id \
-                     AND server_members.oidc_subject = mentions.mention_subject \
-                 WHERE servers.id = $3 AND ( \
-                     servers.owner_subject = mentions.mention_subject \
-                     OR server_members.oidc_subject IS NOT NULL))",
-        )
-        .bind(&mention_user_ids)
-        .bind(&channel_id)
-        .bind(&server_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        if accessible_mentions != mention_user_ids.len() as i64 {
-            return Err(ApiError::InvalidRequest);
-        }
-    }
-    let current_mentions = sqlx::query_scalar::<_, String>(
-        "SELECT mentioned_subject FROM channel_message_mentions \
+    let current_stored_mentions = sqlx::query_as::<_, (String, String, String, i32, i32)>(
+        "SELECT mentioned.oidc_subject, mentioned.handle, mentioned.display_name, \
+         mention.start_index, mention.end_index FROM channel_message_mentions mention \
+         JOIN users mentioned ON mentioned.oidc_subject = mention.mentioned_subject \
          WHERE message_id = $1 ORDER BY ordinal",
     )
     .bind(&message_id)
     .fetch_all(&mut *transaction)
-    .await?;
+    .await?
+    .into_iter()
+    .map(
+        |(user_id, handle, display_name, start, end)| StoredMention {
+            user_id,
+            handle,
+            display_name,
+            start: start as usize,
+            end: end as usize,
+        },
+    )
+    .collect::<Vec<_>>();
+    let current_mentions = current_stored_mentions
+        .iter()
+        .map(|mention| MentionInput {
+            user_id: mention.user_id.clone(),
+            start: mention.start,
+            end: mention.end,
+        })
+        .collect::<Vec<_>>();
+    let (resolved_current_content, resolved_current_mentions) =
+        resolve_mentioned_content(current_stored_content, &current_stored_mentions);
+    let requested_mentions = match input.mentions {
+        Some(mentions) => mentions,
+        None if current_mentions.is_empty() => Vec::new(),
+        None if resolved_current_content.as_deref() == Some(input.content.as_str()) => {
+            resolved_current_mentions
+                .into_iter()
+                .map(|mention| MentionInput {
+                    user_id: mention.user_id,
+                    start: mention.start,
+                    end: mention.end,
+                })
+                .collect()
+        }
+        None => return Err(ApiError::InvalidRequest),
+    };
+    let (requested_content, mentions) =
+        prepare_mentioned_content(&input.content, requested_mentions)?;
+    let mut grandfathered_counts = HashMap::<String, usize>::new();
+    let mut display_names = HashMap::new();
+    for mention in &current_stored_mentions {
+        *grandfathered_counts
+            .entry(mention.user_id.clone())
+            .or_default() += 1;
+        display_names.insert(mention.user_id.clone(), mention.display_name.clone());
+    }
+    let mentions_to_validate = mentions
+        .iter()
+        .filter_map(|mention| {
+            let remaining = grandfathered_counts
+                .entry(mention.user_id.clone())
+                .or_default();
+            if *remaining == 0 {
+                Some(mention.clone())
+            } else {
+                *remaining -= 1;
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    display_names.extend(
+        require_mentions_accessible(
+            &mut transaction,
+            &server_id,
+            &channel_id,
+            &mentions_to_validate,
+        )
+        .await?,
+    );
+    let (stored_content, mentions) =
+        canonicalize_mentioned_content(&requested_content, &mentions, &display_names)?;
     let content_changed = sqlx::query(
         "UPDATE channel_messages SET content = $3, edited_at = NOW() \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL AND content IS DISTINCT FROM $3",
@@ -2020,7 +2222,7 @@ async fn edit_message(
     .await?
     .rows_affected()
         == 1;
-    let mentions_changed = current_mentions != mention_user_ids;
+    let mentions_changed = current_mentions != mentions;
     let changed = content_changed || mentions_changed;
     if changed {
         if mentions_changed && !content_changed {
@@ -2033,21 +2235,7 @@ async fn edit_message(
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("DELETE FROM channel_message_mentions WHERE message_id = $1")
-            .bind(&message_id)
-            .execute(&mut *transaction)
-            .await?;
-        for (ordinal, mentioned_subject) in mention_user_ids.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO channel_message_mentions \
-                 (message_id, mentioned_subject, ordinal) VALUES ($1, $2, $3)",
-            )
-            .bind(&message_id)
-            .bind(mentioned_subject)
-            .bind(ordinal as i32)
-            .execute(&mut *transaction)
-            .await?;
-        }
+        replace_message_mentions(&mut transaction, &message_id, &mentions).await?;
         sqlx::query(
             "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
              VALUES ($1, $2, 'message.edited', \
@@ -2376,6 +2564,31 @@ mod tests {
         assert_eq!(
             session_cookie("secret", true),
             "buzzcode_session=secret; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=2592000"
+        );
+    }
+
+    #[test]
+    fn canonicalizes_a_selected_mention_from_its_stable_user_id() {
+        let content = "👋 @Old";
+        let mentions = vec![MentionInput {
+            user_id: "user-1".to_owned(),
+            start: 2,
+            end: 6,
+        }];
+        let display_names = HashMap::from([("user-1".to_owned(), "New Name".to_owned())]);
+        let Ok(result) = canonicalize_mentioned_content(content, &mentions, &display_names) else {
+            panic!("mention canonicalization should succeed");
+        };
+        assert_eq!(
+            result,
+            (
+                "👋 @New Name".to_owned(),
+                vec![MentionInput {
+                    user_id: "user-1".to_owned(),
+                    start: 2,
+                    end: 11,
+                }],
+            )
         );
     }
 

@@ -69,7 +69,7 @@ export type ChannelMessage = Readonly<{
     count: number;
     reacted: boolean;
   }>[];
-  mentions: readonly UserSearchResult[];
+  mentions: readonly MessageMention[];
 }>;
 
 export type MessagePage = Readonly<{
@@ -89,6 +89,14 @@ export type UserSearchResult = Readonly<{
   handle: string;
   displayName: string;
 }>;
+
+export type MentionInput = Readonly<{
+  userId: string;
+  start: number;
+  end: number;
+}>;
+
+export type MessageMention = UserSearchResult & MentionInput;
 
 export type DirectMessageMessage = Readonly<{
   id: string;
@@ -303,7 +311,19 @@ function parseChannelMessage(value: unknown): ChannelMessage {
       };
     }),
     mentions: Array.isArray(value.mentions)
-      ? value.mentions.map(parseUserSearchResult)
+      ? value.mentions.map((mention) => {
+          const user = parseUserSearchResult(mention);
+          if (
+            !isRecord(mention) ||
+            typeof mention.start !== "number" ||
+            typeof mention.end !== "number" ||
+            mention.start < 0 ||
+            mention.end <= mention.start
+          ) {
+            throw new Error("Buzzcode API returned an invalid Message mention");
+          }
+          return { ...user, start: mention.start, end: mention.end };
+        })
       : [],
   };
 }
@@ -613,7 +633,7 @@ export async function createChannelMessage(
   channelId: string,
   content: string,
   replyToMessageId?: string,
-  mentionUserIds: readonly string[] = [],
+  mentions: readonly MentionInput[] = [],
 ): Promise<ChannelMessage> {
   return parseResponse(
     await fetch(
@@ -622,7 +642,7 @@ export async function createChannelMessage(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content, replyToMessageId, mentionUserIds }),
+        body: JSON.stringify({ content, replyToMessageId, mentions }),
       },
     ),
     parseChannelMessage,
@@ -648,7 +668,7 @@ export async function editChannelMessage(
   channelId: string,
   messageId: string,
   content: string,
-  mentionUserIds: readonly string[] = [],
+  mentions?: readonly MentionInput[],
 ): Promise<ChannelMessage> {
   return parseResponse(
     await fetch(
@@ -657,7 +677,7 @@ export async function editChannelMessage(
         method: "PATCH",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content, mentionUserIds }),
+        body: JSON.stringify({ content, mentions }),
       },
     ),
     parseChannelMessage,
