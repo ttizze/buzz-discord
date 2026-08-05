@@ -208,7 +208,28 @@ button:disabled {
 }
 
 .channel-create {
+  display: grid;
+  gap: 0.5rem;
   margin-top: auto;
+}
+
+.channel-member-picker {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.65rem;
+  margin: 0;
+  border: 1px solid #3e587e;
+  border-radius: 0.6rem;
+}
+
+.channel-member-picker label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.channel-member-picker input {
+  flex: 0 0 auto;
 }
 
 .composer.compact {
@@ -226,12 +247,22 @@ button:disabled {
 }
 
 .channel-header {
+  display: flex;
+  gap: 1rem;
+  align-items: start;
+  justify-content: space-between;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid #2e4162;
 }
 
 .channel-header p {
   margin: 0.25rem 0 0;
+}
+
+.channel-access-editor {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 16rem;
 }
 
 .message-timeline {

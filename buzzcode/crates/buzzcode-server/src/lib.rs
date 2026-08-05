@@ -17,7 +17,7 @@ use openidconnect::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{Executor, PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::broadcast};
 use tower_http::{
@@ -114,6 +114,10 @@ enum ServerEvent {
         server_id: String,
         channel: ChannelSummary,
     },
+    ChannelAccessChanged {
+        #[serde(skip)]
+        server_id: String,
+    },
     MessageCreated {
         #[serde(skip)]
         server_id: String,
@@ -136,8 +140,18 @@ impl ServerEvent {
             | Self::MembershipChanged { server_id }
             | Self::ServerDeleted { server_id }
             | Self::ChannelCreated { server_id, .. }
+            | Self::ChannelAccessChanged { server_id }
             | Self::MessageCreated { server_id, .. }
             | Self::MessageChanged { server_id, .. } => server_id,
+        }
+    }
+
+    fn channel_id(&self) -> Option<&str> {
+        match self {
+            Self::ChannelCreated { channel, .. } => Some(&channel.id),
+            Self::MessageCreated { message, .. } => Some(&message.channel_id),
+            Self::MessageChanged { channel_id, .. } => Some(channel_id),
+            _ => None,
         }
     }
 }
@@ -249,11 +263,28 @@ struct ChannelSummary {
     id: String,
     name: String,
     visibility: String,
+    member_subjects: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateChannel {
     name: String,
+    visibility: Option<String>,
+    #[serde(default)]
+    member_subjects: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct UpdateChannel {
+    visibility: Option<String>,
+    member_subjects: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchMessages {
+    q: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +492,14 @@ pub async fn serve(
         .route(
             "/api/servers/{server_id}/channels",
             get(list_channels).post(create_channel),
+        )
+        .route(
+            "/api/servers/{server_id}/channels/{channel_id}",
+            axum::routing::patch(update_channel),
+        )
+        .route(
+            "/api/servers/{server_id}/messages/search",
+            get(search_messages),
         )
         .route(
             "/api/servers/{server_id}/channels/{channel_id}/messages",
@@ -1242,21 +1281,55 @@ async fn list_channels(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let channels = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT id, name, visibility FROM channels \
-         WHERE server_id = $1 AND visibility = 'open' ORDER BY created_at, id",
+    let channels = sqlx::query_as::<_, (String, String, String, Vec<String>)>(
+        "SELECT channel.id, channel.name, channel.visibility, \
+         COALESCE(ARRAY_AGG(channel_member.oidc_subject ORDER BY channel_member.oidc_subject) \
+         FILTER (WHERE channel_member.oidc_subject IS NOT NULL), ARRAY[]::TEXT[]) \
+         FROM channels channel \
+         LEFT JOIN channel_members channel_member ON channel_member.channel_id = channel.id \
+         WHERE channel.server_id = $1 \
+         AND user_can_access_channel(channel.id, $1, $2) \
+         GROUP BY channel.id, channel.name, channel.visibility, channel.created_at \
+         ORDER BY channel.created_at, channel.id",
     )
     .bind(server_id)
+    .bind(subject)
     .fetch_all(&state.pool)
     .await?
     .into_iter()
-    .map(|(id, name, visibility)| ChannelSummary {
+    .map(|(id, name, visibility, member_subjects)| ChannelSummary {
         id,
         name,
         visibility,
+        member_subjects,
     })
     .collect();
     Ok(Json(channels))
+}
+
+fn normalized_subjects(mut subjects: Vec<String>) -> Vec<String> {
+    subjects.sort();
+    subjects.dedup();
+    subjects
+}
+
+async fn validate_channel_members(
+    pool: &PgPool,
+    server_id: &str,
+    member_subjects: &[String],
+) -> Result<(), ApiError> {
+    let valid_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM server_members \
+         WHERE server_id = $1 AND oidc_subject = ANY($2)",
+    )
+    .bind(server_id)
+    .bind(member_subjects)
+    .fetch_one(pool)
+    .await?;
+    if valid_count != member_subjects.len() as i64 {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok(())
 }
 
 async fn create_channel(
@@ -1272,15 +1345,26 @@ async fn create_channel(
     if name.is_empty() || name.chars().count() > 80 {
         return Err(ApiError::InvalidRequest);
     }
+    let visibility = input.visibility.as_deref().unwrap_or("open");
+    if !matches!(visibility, "open" | "private") {
+        return Err(ApiError::InvalidRequest);
+    }
+    let member_subjects = normalized_subjects(input.member_subjects);
+    if visibility == "open" && !member_subjects.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    validate_channel_members(&state.pool, &server_id, &member_subjects).await?;
     let id = CsrfToken::new_random().secret().to_owned();
     let mut transaction = state.pool.begin().await?;
     let inserted = sqlx::query_scalar::<_, String>(
-        "INSERT INTO channels (id, server_id, name, created_by_subject) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT (server_id, name) DO NOTHING RETURNING id",
+        "INSERT INTO channels (id, server_id, name, visibility, created_by_subject) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (server_id, name) DO NOTHING RETURNING id",
     )
     .bind(&id)
     .bind(&server_id)
     .bind(name)
+    .bind(visibility)
     .bind(&subject)
     .fetch_optional(&mut *transaction)
     .await?;
@@ -1288,25 +1372,139 @@ async fn create_channel(
         return Err(ApiError::Conflict);
     }
     sqlx::query(
+        "INSERT INTO channel_members (channel_id, oidc_subject) \
+         SELECT $1, member_subject FROM UNNEST($2::TEXT[]) member_subject",
+    )
+    .bind(&id)
+    .bind(&member_subjects)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
         "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
-         VALUES ($1, $2, 'channel.created', jsonb_build_object('channelId', $3::TEXT))",
+         VALUES ($1, $2, 'channel.created', jsonb_build_object( \
+             'channelId', $3::TEXT, 'visibility', $4::TEXT, \
+             'memberSubjects', TO_JSONB($5::TEXT[])))",
     )
     .bind(&server_id)
     .bind(&subject)
     .bind(&id)
+    .bind(visibility)
+    .bind(&member_subjects)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
     let channel = ChannelSummary {
         id,
         name: name.to_owned(),
-        visibility: "open".to_owned(),
+        visibility: visibility.to_owned(),
+        member_subjects,
     };
     let _ = state.changes.send(ServerEvent::ChannelCreated {
         server_id,
         channel: channel.clone(),
     });
     Ok((StatusCode::CREATED, Json(channel)))
+}
+
+async fn update_channel(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<UpdateChannel>,
+) -> Result<Json<ChannelSummary>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_manager(&state.pool, &subject, &server_id).await?;
+    if input.visibility.is_none() && input.member_subjects.is_none() {
+        return Err(ApiError::InvalidRequest);
+    }
+    let mut transaction = state.pool.begin().await?;
+    let (name, current_visibility) = sqlx::query_as::<_, (String, String)>(
+        "SELECT name, visibility FROM channels \
+         WHERE id = $1 AND server_id = $2 FOR UPDATE",
+    )
+    .bind(&channel_id)
+    .bind(&server_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let visibility = input
+        .visibility
+        .unwrap_or_else(|| current_visibility.clone());
+    if !matches!(visibility.as_str(), "open" | "private") {
+        return Err(ApiError::InvalidRequest);
+    }
+    if visibility != current_visibility {
+        let has_messages = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM channel_messages WHERE channel_id = $1)",
+        )
+        .bind(&channel_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if has_messages {
+            return Err(ApiError::Conflict);
+        }
+    }
+    let current_members = sqlx::query_scalar::<_, String>(
+        "SELECT oidc_subject FROM channel_members \
+         WHERE channel_id = $1 ORDER BY oidc_subject",
+    )
+    .bind(&channel_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let member_subjects = input
+        .member_subjects
+        .map(normalized_subjects)
+        .unwrap_or_else(|| current_members.clone());
+    if visibility == "open" && !member_subjects.is_empty() {
+        return Err(ApiError::InvalidRequest);
+    }
+    validate_channel_members(&state.pool, &server_id, &member_subjects).await?;
+    let changed = visibility != current_visibility || member_subjects != current_members;
+    if changed {
+        sqlx::query("UPDATE channels SET visibility = $2 WHERE id = $1")
+            .bind(&channel_id)
+            .bind(&visibility)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM channel_members WHERE channel_id = $1")
+            .bind(&channel_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "INSERT INTO channel_members (channel_id, oidc_subject) \
+             SELECT $1, member_subject FROM UNNEST($2::TEXT[]) member_subject",
+        )
+        .bind(&channel_id)
+        .bind(&member_subjects)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+             VALUES ($1, $2, 'channel.access_changed', jsonb_build_object( \
+                 'channelId', $3::TEXT, 'visibility', $4::TEXT, \
+                 'memberSubjects', TO_JSONB($5::TEXT[])))",
+        )
+        .bind(&server_id)
+        .bind(&subject)
+        .bind(&channel_id)
+        .bind(&visibility)
+        .bind(&member_subjects)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    if changed {
+        let _ = state
+            .changes
+            .send(ServerEvent::ChannelAccessChanged { server_id });
+    }
+    Ok(Json(ChannelSummary {
+        id: channel_id,
+        name,
+        visibility,
+        member_subjects,
+    }))
 }
 
 type MessageRow = (
@@ -1364,37 +1562,75 @@ const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.chann
      LEFT JOIN channel_messages reply ON reply.id = message.reply_to_message_id \
      LEFT JOIN users reply_author ON reply_author.oidc_subject = reply.author_subject";
 
-async fn require_open_channel(
+async fn can_access_channel(
     pool: &PgPool,
+    subject: &str,
     server_id: &str,
     channel_id: &str,
-) -> Result<(), ApiError> {
-    let channel_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channels \
-         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
+) -> Result<bool, ApiError> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT user_can_access_channel($1, $2, $3)")
+            .bind(channel_id)
+            .bind(server_id)
+            .bind(subject)
+            .fetch_one(pool)
+            .await?,
     )
-    .bind(channel_id)
-    .bind(server_id)
-    .fetch_one(pool)
-    .await?;
-    if !channel_exists {
+}
+
+enum ChannelLock {
+    Shared,
+    Exclusive,
+}
+
+async fn lock_channel_and_require_access(
+    transaction: &mut Transaction<'_, Postgres>,
+    subject: &str,
+    server_id: &str,
+    channel_id: &str,
+    lock: ChannelLock,
+) -> Result<(), ApiError> {
+    let query = match lock {
+        ChannelLock::Shared => "SELECT id FROM channels WHERE id = $1 AND server_id = $2 FOR SHARE",
+        ChannelLock::Exclusive => {
+            "SELECT id FROM channels WHERE id = $1 AND server_id = $2 FOR UPDATE"
+        }
+    };
+    let channel_exists = sqlx::query_scalar::<_, String>(query)
+        .bind(channel_id)
+        .bind(server_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+    if channel_exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let accessible = sqlx::query_scalar::<_, bool>("SELECT user_can_access_channel($1, $2, $3)")
+        .bind(channel_id)
+        .bind(server_id)
+        .bind(subject)
+        .fetch_one(&mut **transaction)
+        .await?;
+    if !accessible {
         return Err(ApiError::NotFound);
     }
     Ok(())
 }
 
-async fn load_message(
-    pool: &PgPool,
+async fn load_message<'executor, E>(
+    executor: E,
     subject: &str,
     channel_id: &str,
     message_id: &str,
-) -> Result<ChannelMessage, ApiError> {
+) -> Result<ChannelMessage, ApiError>
+where
+    E: Executor<'executor, Database = Postgres>,
+{
     let sql = format!("{MESSAGE_SELECT} WHERE message.id = $1 AND message.channel_id = $3");
     sqlx::query_as::<_, MessageRow>(&sql)
         .bind(message_id)
         .bind(subject)
         .bind(channel_id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?
         .map(message_from_row)
         .ok_or(ApiError::NotFound)
@@ -1413,6 +1649,35 @@ fn publish_message_changed(
     });
 }
 
+async fn search_messages(
+    State(state): State<Arc<AppState>>,
+    Path(server_id): Path<String>,
+    Query(query): Query<SearchMessages>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ChannelMessage>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let term = query.q.trim();
+    if term.is_empty() || term.chars().count() > 200 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let sql = format!(
+        "{MESSAGE_SELECT} JOIN channels channel ON channel.id = message.channel_id \
+         WHERE message.server_id = $1 AND message.deleted_at IS NULL \
+         AND message.content ILIKE $3 \
+         AND user_can_access_channel(channel.id, $1, $2) \
+         ORDER BY message.sequence DESC LIMIT 100"
+    );
+    let rows = sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(&server_id)
+        .bind(&subject)
+        .bind(format!("%{term}%"))
+        .fetch_all(&state.pool)
+        .await?;
+    Ok(Json(rows.into_iter().map(message_from_row).collect()))
+}
+
 async fn list_messages(
     State(state): State<Arc<AppState>>,
     Path((server_id, channel_id)): Path<(String, String)>,
@@ -1422,7 +1687,15 @@ async fn list_messages(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Shared,
+    )
+    .await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 100);
     let sql = format!(
         "{MESSAGE_SELECT} WHERE message.channel_id = $1 \
@@ -1434,8 +1707,9 @@ async fn list_messages(
         .bind(&subject)
         .bind(query.before)
         .bind(limit + 1)
-        .fetch_all(&state.pool)
+        .fetch_all(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);
     let next_before = has_more.then(|| rows.last().map(|row| row.1)).flatten();
@@ -1459,14 +1733,22 @@ async fn create_message(
     if content.is_empty() || content.chars().count() > 4000 {
         return Err(ApiError::InvalidRequest);
     }
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Exclusive,
+    )
+    .await?;
     if let Some(reply_id) = input.reply_to_message_id.as_deref() {
         let target_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM channel_messages WHERE id = $1 AND channel_id = $2)",
         )
         .bind(reply_id)
         .bind(&channel_id)
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *transaction)
         .await?;
         if !target_exists {
             return Err(ApiError::InvalidRequest);
@@ -1484,8 +1766,9 @@ async fn create_message(
     .bind(&subject)
     .bind(content)
     .bind(input.reply_to_message_id)
-    .execute(&state.pool)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     let message = load_message(&state.pool, &subject, &channel_id, &id).await?;
     let _ = state.changes.send(ServerEvent::MessageCreated {
         server_id,
@@ -1502,10 +1785,18 @@ async fn get_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
-    Ok(Json(
-        load_message(&state.pool, &subject, &channel_id, &message_id).await?,
-    ))
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Shared,
+    )
+    .await?;
+    let message = load_message(&mut *transaction, &subject, &channel_id, &message_id).await?;
+    transaction.commit().await?;
+    Ok(Json(message))
 }
 
 async fn edit_message(
@@ -1517,24 +1808,31 @@ async fn edit_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
     let content = input.content.trim();
     if content.is_empty() || content.chars().count() > 4000 {
         return Err(ApiError::InvalidRequest);
     }
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Exclusive,
+    )
+    .await?;
     let author = sqlx::query_scalar::<_, String>(
         "SELECT author_subject FROM channel_messages \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL",
     )
     .bind(&message_id)
     .bind(&channel_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or(ApiError::NotFound)?;
     if author != subject {
         return Err(ApiError::Forbidden);
     }
-    let mut transaction = state.pool.begin().await?;
     let changed = sqlx::query(
         "UPDATE channel_messages SET content = $3, edited_at = NOW() \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL AND content IS DISTINCT FROM $3",
@@ -1576,20 +1874,27 @@ async fn delete_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Exclusive,
+    )
+    .await?;
     let message = sqlx::query_as::<_, (String, bool)>(
         "SELECT author_subject, deleted_at IS NOT NULL FROM channel_messages \
          WHERE id = $1 AND channel_id = $2",
     )
     .bind(&message_id)
     .bind(&channel_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or(ApiError::NotFound)?;
     if message.0 != subject {
         require_manager(&state.pool, &subject, &server_id).await?;
     }
-    let mut transaction = state.pool.begin().await?;
     let changed = if message.1 {
         false
     } else {
@@ -1642,23 +1947,30 @@ async fn change_reaction(
     require_origin(&state.auth, headers)?;
     let subject = require_session(&state.pool, headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    require_open_channel(&state.pool, &server_id, &channel_id).await?;
     let emoji = input.emoji.trim();
     if emoji.is_empty() || emoji.chars().count() > 32 {
         return Err(ApiError::InvalidRequest);
     }
+    let mut transaction = state.pool.begin().await?;
+    lock_channel_and_require_access(
+        &mut transaction,
+        &subject,
+        &server_id,
+        &channel_id,
+        ChannelLock::Exclusive,
+    )
+    .await?;
     let visible = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM channel_messages \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL)",
     )
     .bind(&message_id)
     .bind(&channel_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *transaction)
     .await?;
     if !visible {
         return Err(ApiError::NotFound);
     }
-    let mut transaction = state.pool.begin().await?;
     let changed = if add {
         sqlx::query(
             "INSERT INTO message_reactions (message_id, oidc_subject, emoji) \
@@ -1818,6 +2130,21 @@ async fn events(
                         Err(error) => {
                             tracing::warn!(?error, "failed to reauthorize websocket event");
                             break;
+                        }
+                    }
+                    if let Some(channel_id) = event.channel_id() {
+                        match can_access_channel(&state.pool, &subject, &server_id, channel_id)
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(error) => {
+                                tracing::warn!(
+                                    ?error,
+                                    "failed to authorize websocket channel event"
+                                );
+                                break;
+                            }
                         }
                     }
                     let Ok(payload) = serde_json::to_string(&event) else {

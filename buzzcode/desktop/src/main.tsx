@@ -30,10 +30,47 @@ import {
   startDesktopLogin,
   subscribeToServerEvents,
   transferOwnership,
+  updateChannel,
   updateMemberRole,
   writeDurableState,
 } from "./api";
 import "./styles.css";
+
+function ChannelMemberPicker({
+  members,
+  selectedSubjects,
+  onChange,
+}: {
+  members: readonly ServerMember[];
+  selectedSubjects: readonly string[];
+  onChange: (subjects: readonly string[]) => void;
+}) {
+  return (
+    <fieldset className="channel-member-picker">
+      <legend>Private Channel members</legend>
+      {members
+        .filter((member) => member.role === "member")
+        .map((member) => (
+          <label key={member.subject}>
+            <input
+              type="checkbox"
+              checked={selectedSubjects.includes(member.subject)}
+              onChange={(event) =>
+                onChange(
+                  event.target.checked
+                    ? [...new Set([...selectedSubjects, member.subject])]
+                    : selectedSubjects.filter(
+                        (subject) => subject !== member.subject,
+                      ),
+                )
+              }
+            />
+            Allow {member.email}
+          </label>
+        ))}
+    </fieldset>
+  );
+}
 
 function AuthenticatedApp({
   session,
@@ -46,6 +83,14 @@ function AuthenticatedApp({
   const [channels, setChannels] = useState<readonly Channel[] | null>(null);
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [channelName, setChannelName] = useState("");
+  const [channelVisibility, setChannelVisibility] =
+    useState<Channel["visibility"]>("open");
+  const [newChannelMembers, setNewChannelMembers] = useState<readonly string[]>(
+    [],
+  );
+  const [channelAccessMembers, setChannelAccessMembers] = useState<
+    readonly string[]
+  >([]);
   const [messages, setMessages] = useState<readonly ChannelMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<number | undefined>();
   const [messageDraft, setMessageDraft] = useState("");
@@ -101,12 +146,20 @@ function AuthenticatedApp({
     const loaded = await listChannels(serverId);
     setChannels(loaded);
     setActiveChannel((current) => {
+      const refreshed = loaded.find((channel) => channel.id === current?.id);
       if (
+        refreshed !== undefined &&
         current !== null &&
-        loaded.some((channel) => channel.id === current.id)
+        refreshed.name === current.name &&
+        refreshed.visibility === current.visibility &&
+        refreshed.memberSubjects.length === current.memberSubjects.length &&
+        refreshed.memberSubjects.every(
+          (subject, index) => subject === current.memberSubjects[index],
+        )
       ) {
         return current;
       }
+      if (refreshed !== undefined) return refreshed;
       return loaded[0] ?? null;
     });
   }, []);
@@ -186,6 +239,9 @@ function AuthenticatedApp({
         ) {
           void reloadServers(activeServer.id);
           void reloadManagement(activeServer.id);
+        } else if (event.type === "channelAccessChanged") {
+          void reloadChannels(activeServer.id);
+          void reloadManagement(activeServer.id);
         } else if (event.type === "channelCreated") {
           setChannels((existing) => {
             if (existing?.some((channel) => channel.id === event.channel.id)) {
@@ -244,6 +300,7 @@ function AuthenticatedApp({
     setNextBefore(undefined);
     setReplyingTo(null);
     setEditingMessageId(null);
+    setChannelAccessMembers(activeChannel.memberSubjects);
     void reloadMessages(activeServer.id, activeChannel.id);
   }, [activeChannel, activeServer, reloadMessages]);
 
@@ -256,13 +313,38 @@ function AuthenticatedApp({
 
   async function addChannel() {
     if (activeServer === null) return;
-    const channel = await createChannel(activeServer.id, channelName);
+    const channel = await createChannel(
+      activeServer.id,
+      channelName,
+      channelVisibility,
+      channelVisibility === "private" ? newChannelMembers : [],
+    );
     setChannels((current) => [
       ...(current ?? []).filter((item) => item.id !== channel.id),
       channel,
     ]);
     setActiveChannel(channel);
     setChannelName("");
+    setChannelVisibility("open");
+    setNewChannelMembers([]);
+  }
+
+  async function saveChannelAccess() {
+    if (activeServer === null || activeChannel === null) return;
+    const channel = await updateChannel(
+      activeServer.id,
+      activeChannel.id,
+      activeChannel.visibility,
+      channelAccessMembers,
+    );
+    setChannels(
+      (current) =>
+        current?.map((item) => (item.id === channel.id ? channel : item)) ?? [
+          channel,
+        ],
+    );
+    setActiveChannel(channel);
+    await reloadManagement(activeServer.id);
   }
 
   async function sendMessage() {
@@ -459,21 +541,39 @@ function AuthenticatedApp({
               activeServer.role === "admin") && (
               <div className="channel-create">
                 <label htmlFor="channel-name">Channel name</label>
-                <div className="composer compact">
-                  <input
-                    id="channel-name"
-                    value={channelName}
-                    maxLength={80}
-                    onChange={(event) => setChannelName(event.target.value)}
+                <input
+                  id="channel-name"
+                  value={channelName}
+                  maxLength={80}
+                  onChange={(event) => setChannelName(event.target.value)}
+                />
+                <label htmlFor="channel-visibility">Channel visibility</label>
+                <select
+                  id="channel-visibility"
+                  value={channelVisibility}
+                  onChange={(event) =>
+                    setChannelVisibility(
+                      event.target.value as Channel["visibility"],
+                    )
+                  }
+                >
+                  <option value="open">Open</option>
+                  <option value="private">Private</option>
+                </select>
+                {channelVisibility === "private" && (
+                  <ChannelMemberPicker
+                    members={members}
+                    selectedSubjects={newChannelMembers}
+                    onChange={setNewChannelMembers}
                   />
-                  <button
-                    type="button"
-                    disabled={channelName.trim() === ""}
-                    onClick={() => void addChannel()}
-                  >
-                    Create Channel
-                  </button>
-                </div>
+                )}
+                <button
+                  type="button"
+                  disabled={channelName.trim() === ""}
+                  onClick={() => void addChannel()}
+                >
+                  Create Channel
+                </button>
               </div>
             )}
           </aside>
@@ -490,8 +590,29 @@ function AuthenticatedApp({
                     <h3 data-testid="active-channel-name">
                       # {activeChannel.name}
                     </h3>
-                    <p>Open Channel · visible to every Server Member</p>
+                    <p>
+                      {activeChannel.visibility === "open"
+                        ? "Open Channel · visible to every Server Member"
+                        : "Private Channel · visible to selected Members and Server managers"}
+                    </p>
                   </div>
+                  {activeChannel.visibility === "private" &&
+                    (activeServer.role === "owner" ||
+                      activeServer.role === "admin") && (
+                      <div className="channel-access-editor">
+                        <ChannelMemberPicker
+                          members={members}
+                          selectedSubjects={channelAccessMembers}
+                          onChange={setChannelAccessMembers}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void saveChannelAccess()}
+                        >
+                          Save Channel access
+                        </button>
+                      </div>
+                    )}
                 </header>
                 <div
                   className="message-timeline"

@@ -10,6 +10,7 @@ export type ServerEvent =
   | Readonly<{ type: "membershipChanged" }>
   | Readonly<{ type: "serverDeleted" }>
   | Readonly<{ type: "channelCreated"; channel: Channel }>
+  | Readonly<{ type: "channelAccessChanged" }>
   | Readonly<{ type: "messageCreated"; message: ChannelMessage }>
   | Readonly<{
       type: "messageChanged";
@@ -38,7 +39,8 @@ export type Server = Readonly<{
 export type Channel = Readonly<{
   id: string;
   name: string;
-  visibility: "open";
+  visibility: "open" | "private";
+  memberSubjects: readonly string[];
 }>;
 
 export type ChannelMessage = Readonly<{
@@ -140,7 +142,9 @@ function parseServerEvent(value: unknown): ServerEvent {
   }
   if (
     isRecord(value) &&
-    (value.type === "membershipChanged" || value.type === "serverDeleted")
+    (value.type === "membershipChanged" ||
+      value.type === "serverDeleted" ||
+      value.type === "channelAccessChanged")
   ) {
     return { type: value.type };
   }
@@ -159,11 +163,18 @@ function parseChannel(value: unknown): Channel {
     !isRecord(value) ||
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
-    value.visibility !== "open"
+    !["open", "private"].includes(String(value.visibility)) ||
+    !Array.isArray(value.memberSubjects) ||
+    !value.memberSubjects.every((subject) => typeof subject === "string")
   ) {
     throw new Error("Buzzcode API returned an invalid Channel");
   }
-  return { id: value.id, name: value.name, visibility: value.visibility };
+  return {
+    id: value.id,
+    name: value.name,
+    visibility: value.visibility as Channel["visibility"],
+    memberSubjects: value.memberSubjects,
+  };
 }
 
 function parseChannelMessage(value: unknown): ChannelMessage {
@@ -394,6 +405,8 @@ export async function listChannels(
 export async function createChannel(
   serverId: string,
   name: string,
+  visibility: Channel["visibility"] = "open",
+  memberSubjects: readonly string[] = [],
 ): Promise<Channel> {
   return parseResponse(
     await fetch(
@@ -402,7 +415,27 @@ export async function createChannel(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, visibility, memberSubjects }),
+      },
+    ),
+    parseChannel,
+  );
+}
+
+export async function updateChannel(
+  serverId: string,
+  channelId: string,
+  visibility: Channel["visibility"],
+  memberSubjects: readonly string[],
+): Promise<Channel> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}`,
+      {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ visibility, memberSubjects }),
       },
     ),
     parseChannel,
