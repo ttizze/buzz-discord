@@ -26,10 +26,12 @@ import {
   readDurableState,
   type Server,
   type ServerMember,
+  searchMentionCandidates,
   setMessageReaction,
   startDesktopLogin,
   subscribeToServerEvents,
   transferOwnership,
+  type UserSearchResult,
   updateChannel,
   updateMemberRole,
   writeDurableState,
@@ -73,6 +75,22 @@ function ChannelMemberPicker({
   );
 }
 
+function presentMessageContent(message: ChannelMessage): string | undefined {
+  return message.content?.replace(/<@(\d+)>/g, (_token, ordinal: string) => {
+    const mention = message.mentions[Number(ordinal)];
+    return mention === undefined ? "@unknown" : `@${mention.displayName}`;
+  });
+}
+
+function editableMessageContent(message: ChannelMessage): string {
+  let content = presentMessageContent(message) ?? "";
+  for (const mention of message.mentions) {
+    const prefix = `@${mention.displayName} `;
+    if (content.startsWith(prefix)) content = content.slice(prefix.length);
+  }
+  return content;
+}
+
 function AuthenticatedApp({
   session,
 }: {
@@ -95,6 +113,12 @@ function AuthenticatedApp({
   const [messages, setMessages] = useState<readonly ChannelMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<number | undefined>();
   const [messageDraft, setMessageDraft] = useState("");
+  const [draftMentions, setDraftMentions] = useState<
+    readonly UserSearchResult[]
+  >([]);
+  const [mentionCandidates, setMentionCandidates] = useState<
+    readonly UserSearchResult[]
+  >([]);
   const [replyingTo, setReplyingTo] = useState<ChannelMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -219,6 +243,8 @@ function AuthenticatedApp({
     setMessages([]);
     setNextBefore(undefined);
     setReplyingTo(null);
+    setDraftMentions([]);
+    setMentionCandidates([]);
     setEditingMessageId(null);
     void reloadManagement(activeServer.id);
     void reloadChannels(activeServer.id);
@@ -300,10 +326,48 @@ function AuthenticatedApp({
     setMessages([]);
     setNextBefore(undefined);
     setReplyingTo(null);
+    setDraftMentions([]);
+    setMentionCandidates([]);
     setEditingMessageId(null);
     setChannelAccessMembers(activeChannel.memberSubjects);
     void reloadMessages(activeServer.id, activeChannel.id);
   }, [activeChannel, activeServer, reloadMessages]);
+
+  useEffect(() => {
+    if (activeServer === null || activeChannel === null) return;
+    const match = messageDraft.match(/(?:^|\s)@([^@\n]*)$/);
+    const query = match?.[1]?.trim() ?? "";
+    if (query === "") {
+      setMentionCandidates([]);
+      return;
+    }
+    let current = true;
+    const timeout = window.setTimeout(() => {
+      void searchMentionCandidates(activeServer.id, activeChannel.id, query)
+        .then((candidates) => {
+          if (current) setMentionCandidates(candidates);
+        })
+        .catch(() => {
+          if (current) setMentionCandidates([]);
+        });
+    }, 150);
+    return () => {
+      current = false;
+      window.clearTimeout(timeout);
+    };
+  }, [activeChannel, activeServer, messageDraft]);
+
+  function selectMention(person: UserSearchResult) {
+    setDraftMentions((current) =>
+      current.some(({ userId }) => userId === person.userId)
+        ? current
+        : [...current, person],
+    );
+    setMessageDraft((current) =>
+      current.replace(/(?:^|\s)@([^@\n]*)$/, "").trimEnd(),
+    );
+    setMentionCandidates([]);
+  }
 
   async function addServer() {
     const server = await createServer(serverName);
@@ -355,9 +419,11 @@ function AuthenticatedApp({
       activeChannel.id,
       messageDraft,
       replyingTo?.id,
+      draftMentions.map(({ userId }) => userId),
     );
     setMessages((current) => mergeMessages(current, [message]));
     setMessageDraft("");
+    setDraftMentions([]);
     setReplyingTo(null);
   }
 
@@ -380,11 +446,13 @@ function AuthenticatedApp({
 
   async function saveMessageEdit(messageId: string) {
     if (activeServer === null || activeChannel === null) return;
+    const message = messages.find(({ id }) => id === messageId);
     const updated = await editChannelMessage(
       activeServer.id,
       activeChannel.id,
       messageId,
       editDraft,
+      message?.mentions.map(({ userId }) => userId) ?? [],
     );
     applyMessageUpdate(updated);
     setEditingMessageId(null);
@@ -703,7 +771,7 @@ function AuthenticatedApp({
                           </button>
                         </form>
                       ) : (
-                        <p>{message.content}</p>
+                        <p>{presentMessageContent(message)}</p>
                       )}
                       {message.deletedAt === undefined && (
                         <>
@@ -745,7 +813,7 @@ function AuthenticatedApp({
                                 aria-label={`Edit message by ${message.authorDisplayName}`}
                                 onClick={() => {
                                   setEditingMessageId(message.id);
-                                  setEditDraft(message.content ?? "");
+                                  setEditDraft(editableMessageContent(message));
                                 }}
                               >
                                 Edit
@@ -791,6 +859,26 @@ function AuthenticatedApp({
                       if (messageDraft.trim() !== "") void sendMessage();
                     }}
                   >
+                    {draftMentions.length > 0 && (
+                      <div className="mention-chips">
+                        {draftMentions.map((mention) => (
+                          <button
+                            key={mention.userId}
+                            type="button"
+                            aria-label={`Remove mention ${mention.displayName} @${mention.handle}`}
+                            onClick={() =>
+                              setDraftMentions((current) =>
+                                current.filter(
+                                  ({ userId }) => userId !== mention.userId,
+                                ),
+                              )
+                            }
+                          >
+                            @{mention.displayName}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <label className="sr-only" htmlFor="message-content">
                       Message #{activeChannel.name}
                     </label>
@@ -804,6 +892,20 @@ function AuthenticatedApp({
                     <button type="submit" disabled={messageDraft.trim() === ""}>
                       Send
                     </button>
+                    {mentionCandidates.length > 0 && (
+                      <div className="mention-picker-results">
+                        {mentionCandidates.map((candidate) => (
+                          <button
+                            key={candidate.userId}
+                            type="button"
+                            onClick={() => selectMention(candidate)}
+                          >
+                            <strong>{candidate.displayName}</strong>
+                            <span>@{candidate.handle}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </form>
                 </div>
               </>

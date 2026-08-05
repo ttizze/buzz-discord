@@ -48,6 +48,84 @@ test("chats in an Open Channel with durable flat Replies", async ({
   await expect(member.getByRole("button", { name: "general" })).toBeVisible();
   await expect(member.getByLabel("Channel name")).toHaveCount(0);
 
+  await owner.getByLabel("Invite email").fill("mention_target@example.com");
+  await owner.getByRole("button", { name: "Create invitation" }).click();
+  const mentionInvitationOutput = owner.getByTestId("invitation-code");
+  await expect(mentionInvitationOutput).not.toHaveText(invitation ?? "");
+  const mentionInvitation = await mentionInvitationOutput.textContent();
+  const mentionTargetContext = await browser.newContext();
+  const mentionTarget = await mentionTargetContext.newPage();
+  await signIn(mentionTarget, "mention_target");
+  await mentionTarget
+    .getByLabel("Invitation code")
+    .fill(mentionInvitation ?? "");
+  await mentionTarget.getByRole("button", { name: "Join Server" }).click();
+  await expect(
+    mentionTarget.getByRole("button", { name: "general" }),
+  ).toBeVisible();
+
+  await owner.getByLabel("Message #general").fill("@Mention");
+  await owner
+    .getByRole("button", { name: "Mention Me @mention_target" })
+    .click();
+  await expect(
+    owner.getByRole("button", {
+      name: "Remove mention Mention Me @mention_target",
+    }),
+  ).toBeVisible();
+  await owner.getByLabel("Message #general").fill("Please check this");
+  await owner.getByRole("button", { name: "Send" }).click();
+  const mentionedMessage = mentionTarget.locator("[data-message-id]", {
+    hasText: "Please check this",
+  });
+  await expect(mentionedMessage).toContainText("@Mention Me");
+  const mentionedMessageId =
+    await mentionedMessage.getAttribute("data-message-id");
+  const mentionChannelId = await owner
+    .getByRole("button", { name: "general" })
+    .getAttribute("data-channel-id");
+  const mentionReadback = await owner.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) => {
+      const response = await fetch(
+        `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}`,
+        { credentials: "include" },
+      );
+      return response.json();
+    },
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: mentionChannelId,
+      messageId: mentionedMessageId,
+    },
+  );
+  expect(mentionReadback.mentions).toEqual([
+    {
+      userId: "rauthy-mention_target",
+      handle: "mention_target",
+      displayName: "Mention Me",
+    },
+  ]);
+  const inaccessibleMentionStatus = await owner.evaluate(
+    async ({ apiOrigin, serverId, channelId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              content: "forged mention",
+              mentionUserIds: ["rauthy-intruder"],
+            }),
+          },
+        )
+      ).status,
+    { apiOrigin: harness.apiOrigin, serverId, channelId: mentionChannelId },
+  );
+  expect(inaccessibleMentionStatus).toBe(400);
+
   const forbiddenCreateStatus = await member.evaluate(
     async ({ apiOrigin, serverId }) =>
       (
@@ -369,5 +447,6 @@ test("chats in an Open Channel with durable flat Replies", async ({
   ).toHaveCount(1);
 
   await memberContext.close();
+  await mentionTargetContext.close();
   await ownerContext.close();
 });

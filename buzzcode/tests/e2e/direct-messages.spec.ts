@@ -35,7 +35,7 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
   await expect(
     owner.getByRole("heading", { name: "Direct Messages" }),
   ).toBeVisible();
-  await owner.getByLabel("Find or start a conversation").fill("member");
+  await owner.getByLabel("Find or start a Direct Message").fill("member");
   await owner.getByRole("button", { name: "member @member" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText("member");
   await expect(owner.getByText("member@example.com")).toHaveCount(0);
@@ -49,7 +49,7 @@ test("exchanges a durable one-to-one Direct Message outside Servers", async ({
     .getAttribute("data-direct-message-id");
   expect(directMessageId).toBeTruthy();
 
-  await owner.getByLabel("Find or start a conversation").fill("@member");
+  await owner.getByLabel("Find or start a Direct Message").fill("@member");
   await owner.getByRole("button", { name: "member @member" }).click();
   await expect(owner.getByRole("button", { name: "member" })).toHaveCount(1);
   await expect(owner.getByRole("button", { name: "member" })).toHaveAttribute(
@@ -365,7 +365,7 @@ test("finds people by Display Name and distinguishes duplicate names by username
     ),
   ).toEqual(["alice_one", "alice_two"]);
 
-  await owner.getByLabel("Find or start a conversation").fill("Alice");
+  await owner.getByLabel("Find or start a Direct Message").fill("Alice");
   await expect(
     owner.getByRole("button", { name: "Alice @alice_one" }),
   ).toBeVisible();
@@ -378,9 +378,18 @@ test("finds people by Display Name and distinguishes duplicate names by username
 
   await owner.getByRole("button", { name: "Alice @alice_two" }).click();
   await expect(owner.getByTestId("active-dm-name")).toHaveText("Alice");
+
+  await owner.getByLabel("Find or start a Direct Message").fill("Alice");
+  await owner.getByRole("button", { name: "Alice @alice_one" }).click();
+  await expect(owner.getByTestId("active-dm-name")).toHaveText(
+    "Alice @alice_one",
+  );
   await expect(
     owner.getByRole("navigation", { name: "Direct Messages" }),
-  ).toContainText("Alice");
+  ).toContainText("Alice @alice_one");
+  await expect(
+    owner.getByRole("navigation", { name: "Direct Messages" }),
+  ).toContainText("Alice @alice_two");
 
   const legacyHandleStatus = await owner.evaluate(
     async ({ apiOrigin }) =>
@@ -395,6 +404,23 @@ test("finds people by Display Name and distinguishes duplicate names by username
     { apiOrigin: harness.apiOrigin },
   );
   expect([400, 422]).toContain(legacyHandleStatus);
+
+  const mismatchedIdentityStatus = await owner.evaluate(
+    async ({ apiOrigin }) =>
+      (
+        await fetch(`${apiOrigin}/api/direct-messages`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            peerUserId: "rauthy-alice_two",
+            peerHandle: "alice_one",
+          }),
+        })
+      ).status,
+    { apiOrigin: harness.apiOrigin },
+  );
+  expect(mismatchedIdentityStatus).toBe(404);
 
   await ownerContext.close();
   await firstAliceContext.close();

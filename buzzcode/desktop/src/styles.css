@@ -391,7 +391,48 @@ button:disabled {
 }
 
 .message-composer .composer {
+  position: relative;
+  flex-wrap: wrap;
   margin: 0;
+}
+
+.mention-chips {
+  display: flex;
+  flex-basis: 100%;
+  gap: 0.4rem;
+}
+
+.mention-chips button {
+  padding: 0.35rem 0.55rem;
+  color: #d9e7fa;
+  background: #263b5a;
+}
+
+.mention-picker-results {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: calc(100% + 0.4rem);
+  left: 0;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid #3e587e;
+  border-radius: 0.6rem;
+  background: #101b30;
+  box-shadow: 0 1rem 2rem rgb(0 0 0 / 35%);
+}
+
+.mention-picker-results button {
+  display: flex;
+  gap: 0.5rem;
+  color: #e8edf5;
+  text-align: left;
+  background: transparent;
+}
+
+.mention-picker-results span {
+  color: #8fa1bc;
 }
 
 .replying-to {

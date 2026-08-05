@@ -30,9 +30,11 @@ function idToken(nonce, mode, user) {
   const preferredUsername = user === "owner-handle-copy" ? "owner" : user;
   const displayName = user.startsWith("owner")
     ? "owner"
-    : user.startsWith("alice_")
-      ? "Alice"
-      : user;
+    : user === "mention_target"
+      ? "Mention Me"
+      : user.startsWith("alice_")
+        ? "Alice"
+        : user;
   const header = base64Url(JSON.stringify({ alg: "RS256", kid: keyId }));
   const claims = {
     iss: issuer,

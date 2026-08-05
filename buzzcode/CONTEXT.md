@@ -13,7 +13,7 @@ A non-unique, account-wide presentation name used as the user's primary visible 
 _Avoid_: Handle, Server Nickname, email address
 
 **Server Nickname**:
-An optional, non-unique presentation name for one member inside one server. It takes priority over Display Name when rendering that member or a User Mention within the server, but never renames a cross-server Direct Message.
+An optional, non-unique presentation name for one member inside one server. It is reserved for a later server-profile feature; once introduced, it takes priority over Display Name when rendering that member or a User Mention within the server, but never renames a cross-server Direct Message.
 _Avoid_: Display Name, Handle, role
 
 **Server**:
@@ -85,11 +85,11 @@ A direct server channel available to explicitly added members and server adminis
 _Avoid_: Private project, group direct message
 
 **Direct Message**:
-A one-to-one message stream between a user and either one other human or one local agent outside any server hierarchy. Group direct messages do not exist. A human recipient is selected from a people picker that searches eligible Display Names and Handles, while the Direct Message stores stable user identities. A personal project may be selected as context only when the other party is an agent.
+A one-to-one message stream between a user and either one other human or one local agent outside any server hierarchy. Group direct messages do not exist. A human recipient is selected from a people picker that searches shared-server or existing-DM peers by Display Name or Handle, plus global exact-Handle lookup; the selected stable user identity and Handle must agree when the Direct Message is created. Exact Handle knowledge permits first contact in v1, without a separate friend or Message Request flow. A personal project may be selected as context only when the other party is an agent.
 _Avoid_: Channel, conversation
 
 **User Mention**:
-A message reference to one stable user identity. Typing after `@` searches accessible server members by Server Nickname, Display Name, and Handle; choosing a candidate stores the user identity, not the typed name. It renders as Server Nickname, then Display Name, then Handle, so renaming never changes who was mentioned.
+A message reference to one stable user identity. Typing after `@` searches members who can access the current channel by Display Name and Handle; choosing a candidate stores the user identity, not the typed name. It renders with the current Display Name, so renaming never changes who was mentioned. Once Server Nicknames exist, they also participate in search and take presentation priority inside that server.
 _Avoid_: Plain text name, email address, Agent Mention
 
 **Agent**:

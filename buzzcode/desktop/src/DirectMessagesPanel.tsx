@@ -156,7 +156,7 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
   }, [peopleQuery]);
 
   async function openDirectMessage(person: UserSearchResult) {
-    const created = await startDirectMessage(person.userId);
+    const created = await startDirectMessage(person.userId, person.handle);
     setPeopleQuery("");
     setPeople([]);
     await reloadDirectMessages(created.id);
@@ -211,12 +211,12 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
       </header>
       <div className="dm-person-picker">
         <label htmlFor="direct-message-person">
-          Find or start a conversation
+          Find or start a Direct Message
         </label>
         <input
           id="direct-message-person"
           value={peopleQuery}
-          placeholder="Search by Display Name or @username"
+          placeholder="Search by Display Name or Handle"
           autoCapitalize="none"
           spellCheck={false}
           autoComplete="off"
@@ -253,6 +253,11 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
               onClick={() => setActive(directMessage)}
             >
               {directMessage.peerDisplayName}
+              {directMessages.some(
+                (candidate) =>
+                  candidate.id !== directMessage.id &&
+                  candidate.peerDisplayName === directMessage.peerDisplayName,
+              ) && ` @${directMessage.peerHandle}`}
             </button>
           ))}
         </nav>
@@ -261,7 +266,14 @@ export function DirectMessagesPanel({ session }: { session: SignedInSession }) {
             <p className="channel-empty">Choose a person to start talking.</p>
           ) : (
             <>
-              <h3 data-testid="active-dm-name">{active.peerDisplayName}</h3>
+              <h3 data-testid="active-dm-name">
+                {active.peerDisplayName}
+                {directMessages.some(
+                  (candidate) =>
+                    candidate.id !== active.id &&
+                    candidate.peerDisplayName === active.peerDisplayName,
+                ) && ` @${active.peerHandle}`}
+              </h3>
               <div
                 className="message-timeline"
                 role="log"

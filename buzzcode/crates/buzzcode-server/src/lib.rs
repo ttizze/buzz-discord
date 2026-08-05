@@ -27,6 +27,7 @@ use tower_http::{
 use url::Url;
 
 mod direct_messages;
+mod people;
 
 const SESSION_COOKIE: &str = "buzzcode_session";
 
@@ -306,11 +307,15 @@ struct SearchMessages {
 struct CreateMessage {
     content: String,
     reply_to_message_id: Option<String>,
+    #[serde(default)]
+    mention_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct EditMessage {
     pub(crate) content: String,
+    #[serde(default)]
+    pub(crate) mention_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -356,6 +361,44 @@ struct ChannelMessage {
     deleted_at: Option<String>,
     reply_to: Option<ReplyTarget>,
     reactions: Vec<ReactionSummary>,
+    mentions: Vec<MentionSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MentionSummary {
+    user_id: String,
+    handle: String,
+    display_name: String,
+}
+
+fn prepare_mentioned_content(
+    content: &str,
+    requested_user_ids: Vec<String>,
+) -> Result<(String, Vec<String>), ApiError> {
+    let content = content.trim();
+    let mut mention_user_ids = Vec::new();
+    for user_id in requested_user_ids {
+        if !mention_user_ids.contains(&user_id) {
+            mention_user_ids.push(user_id);
+        }
+    }
+    if content.is_empty() || content.chars().count() > 4000 || mention_user_ids.len() > 20 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let mention_prefix = (0..mention_user_ids.len())
+        .map(|ordinal| format!("<@{ordinal}>"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let stored_content = if mention_prefix.is_empty() {
+        content.to_owned()
+    } else {
+        format!("{mention_prefix} {content}")
+    };
+    if stored_content.chars().count() > 4000 {
+        return Err(ApiError::InvalidRequest);
+    }
+    Ok((stored_content, mention_user_ids))
 }
 
 #[derive(Debug, Serialize)]
@@ -535,6 +578,7 @@ pub async fn serve(
         )
         .route("/api/servers/{server_id}/events", get(events))
         .merge(direct_messages::routes())
+        .merge(people::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(app_origin)
@@ -1592,6 +1636,7 @@ type MessageRow = (
     Option<String>,
     bool,
     sqlx::types::Json<Vec<ReactionSummary>>,
+    sqlx::types::Json<Vec<MentionSummary>>,
 );
 
 fn message_from_row(row: MessageRow) -> ChannelMessage {
@@ -1612,6 +1657,7 @@ fn message_from_row(row: MessageRow) -> ChannelMessage {
             deleted: row.12,
         }),
         reactions: row.13.0,
+        mentions: row.14.0,
     }
 }
 
@@ -1627,6 +1673,12 @@ const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.chann
              SELECT emoji, COUNT(*) AS reaction_count, BOOL_OR(oidc_subject = $2) AS reacted \
              FROM message_reactions WHERE message_id = message.id GROUP BY emoji \
          ) grouped), '[]'::JSONB) \
+     , COALESCE((SELECT JSONB_AGG(JSONB_BUILD_OBJECT( \
+         'userId', mentioned.oidc_subject, 'handle', mentioned.handle, \
+         'displayName', mentioned.display_name) ORDER BY mention.ordinal) \
+         FROM channel_message_mentions mention \
+         JOIN users mentioned ON mentioned.oidc_subject = mention.mentioned_subject \
+         WHERE mention.message_id = message.id), '[]'::JSONB) \
      FROM channel_messages message \
      JOIN users author ON author.oidc_subject = message.author_subject \
      LEFT JOIN channel_messages reply ON reply.id = message.reply_to_message_id \
@@ -1799,10 +1851,8 @@ async fn create_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let content = input.content.trim();
-    if content.is_empty() || content.chars().count() > 4000 {
-        return Err(ApiError::InvalidRequest);
-    }
+    let (stored_content, mention_user_ids) =
+        prepare_mentioned_content(&input.content, input.mention_user_ids)?;
     let mut transaction = state.pool.begin().await?;
     lock_channel_and_require_access(
         &mut transaction,
@@ -1824,6 +1874,26 @@ async fn create_message(
             return Err(ApiError::InvalidRequest);
         }
     }
+    if !mention_user_ids.is_empty() {
+        let accessible_mentions = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM UNNEST($1::TEXT[]) AS mentions(mention_subject) \
+             WHERE user_can_access_channel($2, $3, mentions.mention_subject) \
+             AND EXISTS (SELECT 1 FROM servers \
+                 LEFT JOIN server_members ON server_members.server_id = servers.id \
+                     AND server_members.oidc_subject = mentions.mention_subject \
+                 WHERE servers.id = $3 AND ( \
+                     servers.owner_subject = mentions.mention_subject \
+                     OR server_members.oidc_subject IS NOT NULL))",
+        )
+        .bind(&mention_user_ids)
+        .bind(&channel_id)
+        .bind(&server_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if accessible_mentions != mention_user_ids.len() as i64 {
+            return Err(ApiError::InvalidRequest);
+        }
+    }
     let id = CsrfToken::new_random().secret().to_owned();
     sqlx::query(
         "INSERT INTO channel_messages \
@@ -1834,10 +1904,21 @@ async fn create_message(
     .bind(&server_id)
     .bind(&channel_id)
     .bind(&subject)
-    .bind(content)
+    .bind(stored_content)
     .bind(input.reply_to_message_id)
     .execute(&mut *transaction)
     .await?;
+    for (ordinal, mentioned_subject) in mention_user_ids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO channel_message_mentions \
+             (message_id, mentioned_subject, ordinal) VALUES ($1, $2, $3)",
+        )
+        .bind(&id)
+        .bind(mentioned_subject)
+        .bind(ordinal as i32)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
     let message = load_message(&state.pool, &subject, &channel_id, &id).await?;
     let _ = state.changes.send(ServerEvent::MessageCreated {
@@ -1878,10 +1959,8 @@ async fn edit_message(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let content = input.content.trim();
-    if content.is_empty() || content.chars().count() > 4000 {
-        return Err(ApiError::InvalidRequest);
-    }
+    let (stored_content, mention_user_ids) =
+        prepare_mentioned_content(&input.content, input.mention_user_ids)?;
     let mut transaction = state.pool.begin().await?;
     lock_channel_and_require_access(
         &mut transaction,
@@ -1903,18 +1982,72 @@ async fn edit_message(
     if author != subject {
         return Err(ApiError::Forbidden);
     }
-    let changed = sqlx::query(
+    if !mention_user_ids.is_empty() {
+        let accessible_mentions = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM UNNEST($1::TEXT[]) AS mentions(mention_subject) \
+             WHERE user_can_access_channel($2, $3, mentions.mention_subject) \
+             AND EXISTS (SELECT 1 FROM servers \
+                 LEFT JOIN server_members ON server_members.server_id = servers.id \
+                     AND server_members.oidc_subject = mentions.mention_subject \
+                 WHERE servers.id = $3 AND ( \
+                     servers.owner_subject = mentions.mention_subject \
+                     OR server_members.oidc_subject IS NOT NULL))",
+        )
+        .bind(&mention_user_ids)
+        .bind(&channel_id)
+        .bind(&server_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if accessible_mentions != mention_user_ids.len() as i64 {
+            return Err(ApiError::InvalidRequest);
+        }
+    }
+    let current_mentions = sqlx::query_scalar::<_, String>(
+        "SELECT mentioned_subject FROM channel_message_mentions \
+         WHERE message_id = $1 ORDER BY ordinal",
+    )
+    .bind(&message_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    let content_changed = sqlx::query(
         "UPDATE channel_messages SET content = $3, edited_at = NOW() \
          WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL AND content IS DISTINCT FROM $3",
     )
     .bind(&message_id)
     .bind(&channel_id)
-    .bind(content)
+    .bind(&stored_content)
     .execute(&mut *transaction)
     .await?
     .rows_affected()
         == 1;
+    let mentions_changed = current_mentions != mention_user_ids;
+    let changed = content_changed || mentions_changed;
     if changed {
+        if mentions_changed && !content_changed {
+            sqlx::query(
+                "UPDATE channel_messages SET edited_at = NOW() \
+                 WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL",
+            )
+            .bind(&message_id)
+            .bind(&channel_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        sqlx::query("DELETE FROM channel_message_mentions WHERE message_id = $1")
+            .bind(&message_id)
+            .execute(&mut *transaction)
+            .await?;
+        for (ordinal, mentioned_subject) in mention_user_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO channel_message_mentions \
+                 (message_id, mentioned_subject, ordinal) VALUES ($1, $2, $3)",
+            )
+            .bind(&message_id)
+            .bind(mentioned_subject)
+            .bind(ordinal as i32)
+            .execute(&mut *transaction)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
              VALUES ($1, $2, 'message.edited', \

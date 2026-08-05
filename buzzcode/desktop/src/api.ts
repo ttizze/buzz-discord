@@ -69,6 +69,7 @@ export type ChannelMessage = Readonly<{
     count: number;
     reacted: boolean;
   }>[];
+  mentions: readonly UserSearchResult[];
 }>;
 
 export type MessagePage = Readonly<{
@@ -259,6 +260,9 @@ function parseChannelMessage(value: unknown): ChannelMessage {
   ) {
     throw new Error("Buzzcode API returned an invalid Reply target");
   }
+  if (value.mentions !== undefined && !Array.isArray(value.mentions)) {
+    throw new Error("Buzzcode API returned invalid Message mentions");
+  }
   return {
     id: value.id,
     sequence: value.sequence,
@@ -298,6 +302,9 @@ function parseChannelMessage(value: unknown): ChannelMessage {
         reacted: reaction.reacted,
       };
     }),
+    mentions: Array.isArray(value.mentions)
+      ? value.mentions.map(parseUserSearchResult)
+      : [],
   };
 }
 
@@ -606,6 +613,7 @@ export async function createChannelMessage(
   channelId: string,
   content: string,
   replyToMessageId?: string,
+  mentionUserIds: readonly string[] = [],
 ): Promise<ChannelMessage> {
   return parseResponse(
     await fetch(
@@ -614,7 +622,7 @@ export async function createChannelMessage(
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content, replyToMessageId }),
+        body: JSON.stringify({ content, replyToMessageId, mentionUserIds }),
       },
     ),
     parseChannelMessage,
@@ -640,6 +648,7 @@ export async function editChannelMessage(
   channelId: string,
   messageId: string,
   content: string,
+  mentionUserIds: readonly string[] = [],
 ): Promise<ChannelMessage> {
   return parseResponse(
     await fetch(
@@ -648,7 +657,7 @@ export async function editChannelMessage(
         method: "PATCH",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, mentionUserIds }),
       },
     ),
     parseChannelMessage,
@@ -704,13 +713,14 @@ export async function listDirectMessages(): Promise<readonly DirectMessage[]> {
 
 export async function startDirectMessage(
   peerUserId: string,
+  peerHandle: string,
 ): Promise<DirectMessage> {
   return parseResponse(
     await fetch(`${apiOrigin}/api/direct-messages`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ peerUserId }),
+      body: JSON.stringify({ peerUserId, peerHandle }),
     }),
     parseDirectMessage,
   );
@@ -727,6 +737,23 @@ export async function searchUsers(
   const value: unknown = await response.json();
   if (!Array.isArray(value)) {
     throw new Error("Buzzcode API returned an invalid user search response");
+  }
+  return value.map(parseUserSearchResult);
+}
+
+export async function searchMentionCandidates(
+  serverId: string,
+  channelId: string,
+  query: string,
+): Promise<readonly UserSearchResult[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/mention-suggestions?q=${encodeURIComponent(query)}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned invalid mention suggestions");
   }
   return value.map(parseUserSearchResult);
 }
