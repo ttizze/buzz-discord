@@ -10,13 +10,18 @@ export type ServerEvent =
   | Readonly<{ type: "membershipChanged" }>
   | Readonly<{ type: "serverDeleted" }>
   | Readonly<{ type: "channelCreated"; channel: Channel }>
-  | Readonly<{ type: "messageCreated"; message: ChannelMessage }>;
+  | Readonly<{ type: "messageCreated"; message: ChannelMessage }>
+  | Readonly<{
+      type: "messageChanged";
+      channelId: string;
+      messageId: string;
+    }>;
 
 export type AuthSession =
   | Readonly<{ authenticated: false }>
   | Readonly<{
       authenticated: true;
-      user: Readonly<{ email: string; displayName: string }>;
+      user: Readonly<{ subject: string; email: string; displayName: string }>;
     }>;
 
 export type DesktopLogin = Readonly<{
@@ -40,15 +45,23 @@ export type ChannelMessage = Readonly<{
   id: string;
   sequence: number;
   channelId: string;
-  content: string;
+  content?: string;
   authorSubject: string;
   authorDisplayName: string;
   createdAt: string;
+  editedAt?: string;
+  deletedAt?: string;
   replyTo?: Readonly<{
     id: string;
-    content: string;
+    content?: string;
     authorDisplayName: string;
+    deleted: boolean;
   }>;
+  reactions: readonly Readonly<{
+    emoji: string;
+    count: number;
+    reacted: boolean;
+  }>[];
 }>;
 
 export type MessagePage = Readonly<{
@@ -115,6 +128,18 @@ function parseServerEvent(value: unknown): ServerEvent {
   }
   if (
     isRecord(value) &&
+    value.type === "messageChanged" &&
+    typeof value.channelId === "string" &&
+    typeof value.messageId === "string"
+  ) {
+    return {
+      type: value.type,
+      channelId: value.channelId,
+      messageId: value.messageId,
+    };
+  }
+  if (
+    isRecord(value) &&
     (value.type === "membershipChanged" || value.type === "serverDeleted")
   ) {
     return { type: value.type };
@@ -147,10 +172,17 @@ function parseChannelMessage(value: unknown): ChannelMessage {
     typeof value.id !== "string" ||
     typeof value.sequence !== "number" ||
     typeof value.channelId !== "string" ||
-    typeof value.content !== "string" ||
+    (value.content !== null && typeof value.content !== "string") ||
     typeof value.authorSubject !== "string" ||
     typeof value.authorDisplayName !== "string" ||
-    typeof value.createdAt !== "string"
+    typeof value.createdAt !== "string" ||
+    (value.editedAt !== null &&
+      value.editedAt !== undefined &&
+      typeof value.editedAt !== "string") ||
+    (value.deletedAt !== null &&
+      value.deletedAt !== undefined &&
+      typeof value.deletedAt !== "string") ||
+    !Array.isArray(value.reactions)
   ) {
     throw new Error("Buzzcode API returned an invalid Channel Message");
   }
@@ -160,8 +192,9 @@ function parseChannelMessage(value: unknown): ChannelMessage {
     reply !== null &&
     (!isRecord(reply) ||
       typeof reply.id !== "string" ||
-      typeof reply.content !== "string" ||
-      typeof reply.authorDisplayName !== "string")
+      (reply.content !== null && typeof reply.content !== "string") ||
+      typeof reply.authorDisplayName !== "string" ||
+      typeof reply.deleted !== "boolean")
   ) {
     throw new Error("Buzzcode API returned an invalid Reply target");
   }
@@ -169,19 +202,41 @@ function parseChannelMessage(value: unknown): ChannelMessage {
     id: value.id,
     sequence: value.sequence,
     channelId: value.channelId,
-    content: value.content,
+    ...(typeof value.content === "string" ? { content: value.content } : {}),
     authorSubject: value.authorSubject,
     authorDisplayName: value.authorDisplayName,
     createdAt: value.createdAt,
+    ...(typeof value.editedAt === "string" ? { editedAt: value.editedAt } : {}),
+    ...(typeof value.deletedAt === "string"
+      ? { deletedAt: value.deletedAt }
+      : {}),
     ...(isRecord(reply)
       ? {
           replyTo: {
             id: String(reply.id),
-            content: String(reply.content),
+            ...(typeof reply.content === "string"
+              ? { content: reply.content }
+              : {}),
             authorDisplayName: String(reply.authorDisplayName),
+            deleted: Boolean(reply.deleted),
           },
         }
       : {}),
+    reactions: value.reactions.map((reaction) => {
+      if (
+        !isRecord(reaction) ||
+        typeof reaction.emoji !== "string" ||
+        typeof reaction.count !== "number" ||
+        typeof reaction.reacted !== "boolean"
+      ) {
+        throw new Error("Buzzcode API returned an invalid Reaction");
+      }
+      return {
+        emoji: reaction.emoji,
+        count: reaction.count,
+        reacted: reaction.reacted,
+      };
+    }),
   };
 }
 
@@ -257,6 +312,7 @@ function parseAuthSession(value: unknown): AuthSession {
   if (!value.authenticated) return { authenticated: false };
   if (
     !isRecord(value.user) ||
+    typeof value.user.subject !== "string" ||
     typeof value.user.email !== "string" ||
     typeof value.user.displayName !== "string"
   ) {
@@ -264,7 +320,11 @@ function parseAuthSession(value: unknown): AuthSession {
   }
   return {
     authenticated: true,
-    user: { email: value.user.email, displayName: value.user.displayName },
+    user: {
+      subject: value.user.subject,
+      email: value.user.email,
+      displayName: value.user.displayName,
+    },
   };
 }
 
@@ -394,6 +454,75 @@ export async function createChannelMessage(
         credentials: "include",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content, replyToMessageId }),
+      },
+    ),
+    parseChannelMessage,
+  );
+}
+
+export async function getChannelMessage(
+  serverId: string,
+  channelId: string,
+  messageId: string,
+): Promise<ChannelMessage> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+      { credentials: "include" },
+    ),
+    parseChannelMessage,
+  );
+}
+
+export async function editChannelMessage(
+  serverId: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+): Promise<ChannelMessage> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+    parseChannelMessage,
+  );
+}
+
+export async function deleteChannelMessage(
+  serverId: string,
+  channelId: string,
+  messageId: string,
+): Promise<ChannelMessage> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: "DELETE", credentials: "include" },
+    ),
+    parseChannelMessage,
+  );
+}
+
+export async function setMessageReaction(
+  serverId: string,
+  channelId: string,
+  messageId: string,
+  emoji: string,
+  reacted: boolean,
+): Promise<ChannelMessage> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`,
+      {
+        method: reacted ? "POST" : "DELETE",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ emoji }),
       },
     ),
     parseChannelMessage,

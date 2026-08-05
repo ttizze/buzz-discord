@@ -117,7 +117,15 @@ enum ServerEvent {
     MessageCreated {
         #[serde(skip)]
         server_id: String,
-        message: ChannelMessage,
+        message: Box<ChannelMessage>,
+    },
+    MessageChanged {
+        #[serde(skip)]
+        server_id: String,
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "messageId")]
+        message_id: String,
     },
 }
 
@@ -128,7 +136,8 @@ impl ServerEvent {
             | Self::MembershipChanged { server_id }
             | Self::ServerDeleted { server_id }
             | Self::ChannelCreated { server_id, .. }
-            | Self::MessageCreated { server_id, .. } => server_id,
+            | Self::MessageCreated { server_id, .. }
+            | Self::MessageChanged { server_id, .. } => server_id,
         }
     }
 }
@@ -141,6 +150,7 @@ struct Health {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionUser {
+    subject: String,
     email: String,
     display_name: String,
 }
@@ -254,6 +264,16 @@ struct CreateMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct EditMessage {
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReactionInput {
+    emoji: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MessagePageQuery {
     before: Option<i64>,
@@ -264,8 +284,17 @@ struct MessagePageQuery {
 #[serde(rename_all = "camelCase")]
 struct ReplyTarget {
     id: String,
-    content: String,
+    content: Option<String>,
     author_display_name: String,
+    deleted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReactionSummary {
+    emoji: String,
+    count: i64,
+    reacted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,11 +303,14 @@ struct ChannelMessage {
     id: String,
     sequence: i64,
     channel_id: String,
-    content: String,
+    content: Option<String>,
     author_subject: String,
     author_display_name: String,
     created_at: String,
+    edited_at: Option<String>,
+    deleted_at: Option<String>,
     reply_to: Option<ReplyTarget>,
+    reactions: Vec<ReactionSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -433,6 +465,14 @@ pub async fn serve(
         .route(
             "/api/servers/{server_id}/channels/{channel_id}/messages",
             get(list_messages).post(create_message),
+        )
+        .route(
+            "/api/servers/{server_id}/channels/{channel_id}/messages/{message_id}",
+            get(get_message).patch(edit_message).delete(delete_message),
+        )
+        .route(
+            "/api/servers/{server_id}/channels/{channel_id}/messages/{message_id}/reactions",
+            post(add_reaction).delete(remove_reaction),
         )
         .route(
             "/api/servers/{server_id}/bootstrap",
@@ -670,8 +710,8 @@ async fn read_session(
             user: None,
         }));
     };
-    let user = sqlx::query_as::<_, (String, String)>(
-        "SELECT users.email, users.display_name FROM sessions \
+    let user = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT users.oidc_subject, users.email, users.display_name FROM sessions \
          JOIN users ON users.oidc_subject = sessions.oidc_subject \
          WHERE sessions.token_hash = $1 AND sessions.expires_at > NOW()",
     )
@@ -680,7 +720,8 @@ async fn read_session(
     .await?;
     Ok(Json(AuthSession {
         authenticated: user.is_some(),
-        user: user.map(|(email, display_name)| SessionUser {
+        user: user.map(|(subject, email, display_name)| SessionUser {
+            subject,
             email,
             display_name,
         }),
@@ -1272,13 +1313,17 @@ type MessageRow = (
     String,
     i64,
     String,
-    String,
+    Option<String>,
     String,
     String,
     String,
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
+    bool,
+    sqlx::types::Json<Vec<ReactionSummary>>,
 );
 
 fn message_from_row(row: MessageRow) -> ChannelMessage {
@@ -1290,22 +1335,83 @@ fn message_from_row(row: MessageRow) -> ChannelMessage {
         author_subject: row.4,
         author_display_name: row.5,
         created_at: row.6,
-        reply_to: row.7.map(|id| ReplyTarget {
+        edited_at: row.7,
+        deleted_at: row.8,
+        reply_to: row.9.map(|id| ReplyTarget {
             id,
-            content: row.8.unwrap_or_default(),
-            author_display_name: row.9.unwrap_or_default(),
+            content: row.10,
+            author_display_name: row.11.unwrap_or_default(),
+            deleted: row.12,
         }),
+        reactions: row.13.0,
     }
 }
 
 const MESSAGE_SELECT: &str = "SELECT message.id, message.sequence, message.channel_id, message.content, \
      message.author_subject, author.display_name, \
      TO_CHAR(message.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
-     reply.id, reply.content, reply_author.display_name \
+     TO_CHAR(message.edited_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+     TO_CHAR(message.deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+     reply.id, reply.content, reply_author.display_name, reply.deleted_at IS NOT NULL, \
+     COALESCE((SELECT JSONB_AGG(JSONB_BUILD_OBJECT( \
+         'emoji', grouped.emoji, 'count', grouped.reaction_count, 'reacted', grouped.reacted) \
+         ORDER BY grouped.emoji) FROM ( \
+             SELECT emoji, COUNT(*) AS reaction_count, BOOL_OR(oidc_subject = $2) AS reacted \
+             FROM message_reactions WHERE message_id = message.id GROUP BY emoji \
+         ) grouped), '[]'::JSONB) \
      FROM channel_messages message \
      JOIN users author ON author.oidc_subject = message.author_subject \
      LEFT JOIN channel_messages reply ON reply.id = message.reply_to_message_id \
      LEFT JOIN users reply_author ON reply_author.oidc_subject = reply.author_subject";
+
+async fn require_open_channel(
+    pool: &PgPool,
+    server_id: &str,
+    channel_id: &str,
+) -> Result<(), ApiError> {
+    let channel_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM channels \
+         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
+    )
+    .bind(channel_id)
+    .bind(server_id)
+    .fetch_one(pool)
+    .await?;
+    if !channel_exists {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+async fn load_message(
+    pool: &PgPool,
+    subject: &str,
+    channel_id: &str,
+    message_id: &str,
+) -> Result<ChannelMessage, ApiError> {
+    let sql = format!("{MESSAGE_SELECT} WHERE message.id = $1 AND message.channel_id = $3");
+    sqlx::query_as::<_, MessageRow>(&sql)
+        .bind(message_id)
+        .bind(subject)
+        .bind(channel_id)
+        .fetch_optional(pool)
+        .await?
+        .map(message_from_row)
+        .ok_or(ApiError::NotFound)
+}
+
+fn publish_message_changed(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) {
+    let _ = state.changes.send(ServerEvent::MessageChanged {
+        server_id,
+        channel_id,
+        message_id,
+    });
+}
 
 async fn list_messages(
     State(state): State<Arc<AppState>>,
@@ -1316,25 +1422,16 @@ async fn list_messages(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_member(&state.pool, &subject, &server_id).await?;
-    let channel_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channels \
-         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
-    )
-    .bind(&channel_id)
-    .bind(&server_id)
-    .fetch_one(&state.pool)
-    .await?;
-    if !channel_exists {
-        return Err(ApiError::NotFound);
-    }
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 100);
     let sql = format!(
         "{MESSAGE_SELECT} WHERE message.channel_id = $1 \
-         AND ($2::BIGINT IS NULL OR message.sequence < $2) \
-         ORDER BY message.sequence DESC LIMIT $3"
+         AND ($3::BIGINT IS NULL OR message.sequence < $3) \
+         ORDER BY message.sequence DESC LIMIT $4"
     );
     let mut rows = sqlx::query_as::<_, MessageRow>(&sql)
-        .bind(channel_id)
+        .bind(&channel_id)
+        .bind(&subject)
         .bind(query.before)
         .bind(limit + 1)
         .fetch_all(&state.pool)
@@ -1362,17 +1459,7 @@ async fn create_message(
     if content.is_empty() || content.chars().count() > 4000 {
         return Err(ApiError::InvalidRequest);
     }
-    let channel_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channels \
-         WHERE id = $1 AND server_id = $2 AND visibility = 'open')",
-    )
-    .bind(&channel_id)
-    .bind(&server_id)
-    .fetch_one(&state.pool)
-    .await?;
-    if !channel_exists {
-        return Err(ApiError::NotFound);
-    }
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
     if let Some(reply_id) = input.reply_to_message_id.as_deref() {
         let target_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM channel_messages WHERE id = $1 AND channel_id = $2)",
@@ -1399,18 +1486,254 @@ async fn create_message(
     .bind(input.reply_to_message_id)
     .execute(&state.pool)
     .await?;
-    let sql = format!("{MESSAGE_SELECT} WHERE message.id = $1");
-    let message = message_from_row(
-        sqlx::query_as::<_, MessageRow>(&sql)
-            .bind(id)
-            .fetch_one(&state.pool)
-            .await?,
-    );
+    let message = load_message(&state.pool, &subject, &channel_id, &id).await?;
     let _ = state.changes.send(ServerEvent::MessageCreated {
         server_id,
-        message: message.clone(),
+        message: Box::new(message.clone()),
     });
     Ok((StatusCode::CREATED, Json(message)))
+}
+
+async fn get_message(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id, message_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    Ok(Json(
+        load_message(&state.pool, &subject, &channel_id, &message_id).await?,
+    ))
+}
+
+async fn edit_message(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id, message_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<EditMessage>,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let content = input.content.trim();
+    if content.is_empty() || content.chars().count() > 4000 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let author = sqlx::query_scalar::<_, String>(
+        "SELECT author_subject FROM channel_messages \
+         WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(&message_id)
+    .bind(&channel_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    if author != subject {
+        return Err(ApiError::Forbidden);
+    }
+    let mut transaction = state.pool.begin().await?;
+    let changed = sqlx::query(
+        "UPDATE channel_messages SET content = $3, edited_at = NOW() \
+         WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL AND content IS DISTINCT FROM $3",
+    )
+    .bind(&message_id)
+    .bind(&channel_id)
+    .bind(content)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected()
+        == 1;
+    if changed {
+        sqlx::query(
+            "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+             VALUES ($1, $2, 'message.edited', \
+             jsonb_build_object('channelId', $3::TEXT, 'messageId', $4::TEXT))",
+        )
+        .bind(&server_id)
+        .bind(&subject)
+        .bind(&channel_id)
+        .bind(&message_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    if changed {
+        publish_message_changed(&state, server_id, channel_id.clone(), message_id.clone());
+    }
+    Ok(Json(
+        load_message(&state.pool, &subject, &channel_id, &message_id).await?,
+    ))
+}
+
+async fn delete_message(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id, message_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let message = sqlx::query_as::<_, (String, bool)>(
+        "SELECT author_subject, deleted_at IS NOT NULL FROM channel_messages \
+         WHERE id = $1 AND channel_id = $2",
+    )
+    .bind(&message_id)
+    .bind(&channel_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    if message.0 != subject {
+        require_manager(&state.pool, &subject, &server_id).await?;
+    }
+    let mut transaction = state.pool.begin().await?;
+    let changed = if message.1 {
+        false
+    } else {
+        sqlx::query(
+            "UPDATE channel_messages SET content = NULL, deleted_at = NOW() \
+             WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&message_id)
+        .bind(&channel_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1
+    };
+    if changed {
+        sqlx::query("DELETE FROM message_reactions WHERE message_id = $1")
+            .bind(&message_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+             VALUES ($1, $2, 'message.deleted', \
+             jsonb_build_object('channelId', $3::TEXT, 'messageId', $4::TEXT))",
+        )
+        .bind(&server_id)
+        .bind(&subject)
+        .bind(&channel_id)
+        .bind(&message_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    if changed {
+        publish_message_changed(&state, server_id, channel_id.clone(), message_id.clone());
+    }
+    Ok(Json(
+        load_message(&state.pool, &subject, &channel_id, &message_id).await?,
+    ))
+}
+
+async fn change_reaction(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    headers: &HeaderMap,
+    input: ReactionInput,
+    add: bool,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    require_origin(&state.auth, headers)?;
+    let subject = require_session(&state.pool, headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    require_open_channel(&state.pool, &server_id, &channel_id).await?;
+    let emoji = input.emoji.trim();
+    if emoji.is_empty() || emoji.chars().count() > 32 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let visible = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM channel_messages \
+         WHERE id = $1 AND channel_id = $2 AND deleted_at IS NULL)",
+    )
+    .bind(&message_id)
+    .bind(&channel_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !visible {
+        return Err(ApiError::NotFound);
+    }
+    let mut transaction = state.pool.begin().await?;
+    let changed = if add {
+        sqlx::query(
+            "INSERT INTO message_reactions (message_id, oidc_subject, emoji) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(&message_id)
+        .bind(&subject)
+        .bind(emoji)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1
+    } else {
+        sqlx::query(
+            "DELETE FROM message_reactions \
+             WHERE message_id = $1 AND oidc_subject = $2 AND emoji = $3",
+        )
+        .bind(&message_id)
+        .bind(&subject)
+        .bind(emoji)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1
+    };
+    if changed {
+        sqlx::query(
+            "INSERT INTO server_audit_log (server_id, actor_subject, action, detail) \
+             VALUES ($1, $2, $3, jsonb_build_object( \
+             'channelId', $4::TEXT, 'messageId', $5::TEXT, 'emoji', $6::TEXT))",
+        )
+        .bind(&server_id)
+        .bind(&subject)
+        .bind(if add {
+            "reaction.added"
+        } else {
+            "reaction.removed"
+        })
+        .bind(&channel_id)
+        .bind(&message_id)
+        .bind(emoji)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    if changed {
+        publish_message_changed(state, server_id, channel_id.clone(), message_id.clone());
+    }
+    Ok(Json(
+        load_message(&state.pool, &subject, &channel_id, &message_id).await?,
+    ))
+}
+
+async fn add_reaction(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id, message_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<ReactionInput>,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    change_reaction(
+        &state, server_id, channel_id, message_id, &headers, input, true,
+    )
+    .await
+}
+
+async fn remove_reaction(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, channel_id, message_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<ReactionInput>,
+) -> Result<Json<ChannelMessage>, ApiError> {
+    change_reaction(
+        &state, server_id, channel_id, message_id, &headers, input, false,
+    )
+    .await
 }
 
 async fn require_member(pool: &PgPool, subject: &str, server_id: &str) -> Result<(), ApiError> {
@@ -1551,5 +1874,23 @@ mod tests {
         };
         let json = serde_json::to_value(event).unwrap_or_default();
         assert_eq!(json, serde_json::json!({ "type": "membershipChanged" }));
+    }
+
+    #[test]
+    fn message_changed_event_uses_the_public_json_contract() {
+        let event = ServerEvent::MessageChanged {
+            server_id: "server-1".to_owned(),
+            channel_id: "channel-1".to_owned(),
+            message_id: "message-1".to_owned(),
+        };
+        let json = serde_json::to_value(event).unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "messageChanged",
+                "channelId": "channel-1",
+                "messageId": "message-1"
+            })
+        );
     }
 }

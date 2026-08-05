@@ -92,6 +92,229 @@ test("chats in an Open Channel with durable flat Replies", async ({
   await expect(secondReply.locator(".reply-reference")).toHaveCount(1);
   await expect(secondReply).not.toContainText("First message");
 
+  const firstMessage = owner
+    .locator(".message > p")
+    .filter({ hasText: /^First message$/ })
+    .locator("..");
+  const firstMessageId = await firstMessage.getAttribute("data-message-id");
+  expect(firstMessageId).toBeTruthy();
+  const ownerFirstMessage = owner.locator(
+    `[data-message-id="${firstMessageId}"]`,
+  );
+  const memberEditStatus = await member.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}`,
+          {
+            method: "PATCH",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ content: "forbidden edit" }),
+          },
+        )
+      ).status,
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: firstMessageId,
+    },
+  );
+  expect(memberEditStatus).toBe(403);
+
+  await ownerFirstMessage
+    .getByRole("button", { name: "Edit message by owner" })
+    .click();
+  await ownerFirstMessage
+    .getByRole("textbox", { name: "Edit message by owner" })
+    .fill("First message edited");
+  await ownerFirstMessage.getByRole("button", { name: "Save edit" }).click();
+  await expect(
+    member.locator(`[data-message-id="${firstMessageId}"]`),
+  ).toContainText("First message edited");
+  await expect(ownerFirstMessage).toContainText("edited");
+
+  const memberFirstMessage = member.locator(
+    `[data-message-id="${firstMessageId}"]`,
+  );
+  await memberFirstMessage
+    .getByRole("button", { name: "React with 👍" })
+    .click();
+  await expect(
+    ownerFirstMessage.getByRole("button", { name: "React with 👍" }),
+  ).toContainText("1");
+  const duplicateReactionStatus = await member.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}/reactions`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ emoji: "👍" }),
+          },
+        )
+      ).status,
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: firstMessageId,
+    },
+  );
+  expect(duplicateReactionStatus).toBe(200);
+  await expect(
+    ownerFirstMessage.getByRole("button", { name: "React with 👍" }),
+  ).toContainText("1");
+  await memberFirstMessage
+    .getByRole("button", { name: "React with 👍" })
+    .click();
+  await expect(
+    ownerFirstMessage.getByRole("button", { name: "React with 👍" }),
+  ).toHaveText("👍");
+
+  const replyOneMessage = member
+    .locator(".message > p")
+    .filter({ hasText: /^Reply one$/ })
+    .locator("..");
+  const replyOneId = await replyOneMessage.getAttribute("data-message-id");
+  expect(replyOneId).toBeTruthy();
+  const memberReplyOne = member.locator(`[data-message-id="${replyOneId}"]`);
+  await memberReplyOne
+    .getByRole("button", { name: "Edit message by member" })
+    .click();
+  await memberReplyOne
+    .getByRole("textbox", { name: "Edit message by member" })
+    .fill("Reply one edited");
+  await memberReplyOne.getByRole("button", { name: "Save edit" }).click();
+  await expect(secondReply).toContainText("Reply one edited");
+
+  const unauthorizedDeleteStatus = await member.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}`,
+          { method: "DELETE", credentials: "include" },
+        )
+      ).status,
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: firstMessageId,
+    },
+  );
+  expect(unauthorizedDeleteStatus).toBe(403);
+
+  const ownerReplyOne = owner.locator(`[data-message-id="${replyOneId}"]`);
+  await ownerReplyOne
+    .getByRole("button", { name: "Delete message by member" })
+    .click();
+  await expect(ownerReplyOne).toContainText("Message deleted");
+  await expect(
+    member.locator(`[data-message-id="${replyOneId}"]`),
+  ).toContainText("Message deleted");
+  await expect(secondReply.locator(".reply-reference")).toContainText(
+    "Message deleted",
+  );
+
+  const repeatedDeleteStatus = await owner.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}`,
+          { method: "DELETE", credentials: "include" },
+        )
+      ).status,
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: replyOneId,
+    },
+  );
+  expect(repeatedDeleteStatus).toBe(200);
+  const deletedReadback = await owner.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) => {
+      const response = await fetch(
+        `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}`,
+        { credentials: "include" },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: replyOneId,
+    },
+  );
+  expect(deletedReadback.status).toBe(200);
+  expect(deletedReadback.body.content).toBeNull();
+  const deletedReactionStatus = await member.evaluate(
+    async ({ apiOrigin, serverId, channelId, messageId }) =>
+      (
+        await fetch(
+          `${apiOrigin}/api/servers/${serverId}/channels/${channelId}/messages/${messageId}/reactions`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ emoji: "👍" }),
+          },
+        )
+      ).status,
+    {
+      apiOrigin: harness.apiOrigin,
+      serverId,
+      channelId: await owner
+        .getByRole("button", { name: "general" })
+        .getAttribute("data-channel-id"),
+      messageId: replyOneId,
+    },
+  );
+  expect(deletedReactionStatus).toBe(404);
+  const deletionAuditCount = await owner.evaluate(
+    async ({ apiOrigin, serverId, messageId }) => {
+      const response = await fetch(
+        `${apiOrigin}/api/servers/${serverId}/audit`,
+        { credentials: "include" },
+      );
+      const entries = (await response.json()) as {
+        action: string;
+        detail: { messageId?: string };
+      }[];
+      return entries.filter(
+        (entry) =>
+          entry.action === "message.deleted" &&
+          entry.detail.messageId === messageId,
+      ).length;
+    },
+    { apiOrigin: harness.apiOrigin, serverId, messageId: replyOneId },
+  );
+  expect(deletionAuditCount).toBe(1);
+  await expect(owner.getByTestId("audit-history")).toContainText(
+    "message.edited",
+  );
+  await expect(owner.getByTestId("audit-history")).toContainText(
+    "message.deleted",
+  );
+  await expect(owner.getByTestId("audit-history")).toContainText(
+    "reaction.removed",
+  );
+
   const channelId = await owner
     .getByRole("button", { name: "general" })
     .getAttribute("data-channel-id");
@@ -119,12 +342,14 @@ test("chats in an Open Channel with durable flat Replies", async ({
     member.getByRole("button", { name: "Load older messages" }),
   ).toBeVisible();
   await expect(member.getByText("Paginated 51", { exact: true })).toBeVisible();
-  await expect(member.getByText("First message", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    member.getByText("First message edited", { exact: true }),
+  ).toHaveCount(0);
   await member.getByRole("button", { name: "Load older messages" }).click();
   await expect(
-    member.locator(".message > p").filter({ hasText: /^First message$/ }),
+    member
+      .locator(".message > p")
+      .filter({ hasText: /^First message edited$/ }),
   ).toBeVisible();
 
   await harness.restartServer();
@@ -134,6 +359,11 @@ test("chats in an Open Channel with durable flat Replies", async ({
   await expect(
     member.locator("[data-message-id]", { hasText: "Reply two" }),
   ).toHaveCount(1);
+  await expect(
+    member
+      .locator("[data-message-id]", { hasText: "Reply two" })
+      .locator(".reply-reference"),
+  ).toContainText("Message deleted");
   await expect(
     member.locator("[data-message-id]", { hasText: "Paginated 51" }),
   ).toHaveCount(1);

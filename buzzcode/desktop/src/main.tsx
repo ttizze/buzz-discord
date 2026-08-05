@@ -11,7 +11,10 @@ import {
   createChannelMessage,
   createInvitation,
   createServer,
+  deleteChannelMessage,
   deleteServer,
+  editChannelMessage,
+  getChannelMessage,
   listAudit,
   listChannelMessages,
   listChannels,
@@ -23,6 +26,7 @@ import {
   readDurableState,
   type Server,
   type ServerMember,
+  setMessageReaction,
   startDesktopLogin,
   subscribeToServerEvents,
   transferOwnership,
@@ -46,6 +50,8 @@ function AuthenticatedApp({
   const [nextBefore, setNextBefore] = useState<number | undefined>();
   const [messageDraft, setMessageDraft] = useState("");
   const [replyingTo, setReplyingTo] = useState<ChannelMessage | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [durableValue, setDurableValue] = useState("Loading…");
   const [draft, setDraft] = useState("");
   const [connected, setConnected] = useState(false);
@@ -115,6 +121,36 @@ function AuthenticatedApp({
     [mergeMessages],
   );
 
+  const applyMessageUpdate = useCallback(
+    (updated: ChannelMessage) => {
+      setMessages((current) =>
+        mergeMessages(current, [updated]).map((message) => {
+          if (message.replyTo?.id !== updated.id) return message;
+          return {
+            ...message,
+            replyTo: {
+              id: message.replyTo.id,
+              authorDisplayName: message.replyTo.authorDisplayName,
+              deleted: updated.deletedAt !== undefined,
+              ...(updated.content !== undefined
+                ? { content: updated.content }
+                : {}),
+            },
+          };
+        }),
+      );
+    },
+    [mergeMessages],
+  );
+
+  const refreshMessage = useCallback(
+    async (serverId: string, channelId: string, messageId: string) => {
+      const updated = await getChannelMessage(serverId, channelId, messageId);
+      if (messageChannelId.current === channelId) applyMessageUpdate(updated);
+    },
+    [applyMessageUpdate],
+  );
+
   useEffect(() => {
     void reloadServers();
   }, [reloadServers]);
@@ -129,6 +165,7 @@ function AuthenticatedApp({
     setMessages([]);
     setNextBefore(undefined);
     setReplyingTo(null);
+    setEditingMessageId(null);
     void reloadManagement(activeServer.id);
     void reloadChannels(activeServer.id);
     void readDurableState(activeServer.id).then((state) => {
@@ -162,6 +199,16 @@ function AuthenticatedApp({
           event.message.channelId === messageChannelId.current
         ) {
           setMessages((existing) => mergeMessages(existing, [event.message]));
+        } else if (
+          event.type === "messageChanged" &&
+          event.channelId === messageChannelId.current
+        ) {
+          void refreshMessage(
+            activeServer.id,
+            event.channelId,
+            event.messageId,
+          );
+          void reloadManagement(activeServer.id);
         }
       },
       (connected) => {
@@ -187,6 +234,7 @@ function AuthenticatedApp({
     reloadManagement,
     reloadMessages,
     reloadServers,
+    refreshMessage,
   ]);
 
   useEffect(() => {
@@ -195,6 +243,7 @@ function AuthenticatedApp({
     setMessages([]);
     setNextBefore(undefined);
     setReplyingTo(null);
+    setEditingMessageId(null);
     void reloadMessages(activeServer.id, activeChannel.id);
   }, [activeChannel, activeServer, reloadMessages]);
 
@@ -244,6 +293,43 @@ function AuthenticatedApp({
     );
     setMessages((current) => mergeMessages(current, page.messages));
     setNextBefore(page.nextBefore);
+  }
+
+  async function saveMessageEdit(messageId: string) {
+    if (activeServer === null || activeChannel === null) return;
+    const updated = await editChannelMessage(
+      activeServer.id,
+      activeChannel.id,
+      messageId,
+      editDraft,
+    );
+    applyMessageUpdate(updated);
+    setEditingMessageId(null);
+    setEditDraft("");
+  }
+
+  async function removeMessage(messageId: string) {
+    if (activeServer === null || activeChannel === null) return;
+    const updated = await deleteChannelMessage(
+      activeServer.id,
+      activeChannel.id,
+      messageId,
+    );
+    applyMessageUpdate(updated);
+    if (replyingTo?.id === messageId) setReplyingTo(null);
+  }
+
+  async function toggleReaction(message: ChannelMessage, emoji: string) {
+    if (activeServer === null || activeChannel === null) return;
+    const reaction = message.reactions.find((item) => item.emoji === emoji);
+    const updated = await setMessageReaction(
+      activeServer.id,
+      activeChannel.id,
+      message.id,
+      emoji,
+      !(reaction?.reacted ?? false),
+    );
+    applyMessageUpdate(updated);
   }
 
   async function save() {
@@ -434,7 +520,11 @@ function AuthenticatedApp({
                       {message.replyTo !== undefined && (
                         <div className="reply-reference">
                           <strong>{message.replyTo.authorDisplayName}</strong>
-                          <span>{message.replyTo.content}</span>
+                          <span>
+                            {message.replyTo.deleted
+                              ? "Message deleted"
+                              : message.replyTo.content}
+                          </span>
                         </div>
                       )}
                       <div className="message-meta">
@@ -445,16 +535,113 @@ function AuthenticatedApp({
                             minute: "2-digit",
                           })}
                         </time>
+                        {message.editedAt !== undefined &&
+                          message.deletedAt === undefined && (
+                            <span>edited</span>
+                          )}
                       </div>
-                      <p>{message.content}</p>
-                      <button
-                        className="reply-button"
-                        type="button"
-                        aria-label={`Reply to ${message.authorDisplayName}`}
-                        onClick={() => setReplyingTo(message)}
-                      >
-                        Reply
-                      </button>
+                      {message.deletedAt !== undefined ? (
+                        <p className="deleted-message">Message deleted</p>
+                      ) : editingMessageId === message.id ? (
+                        <form
+                          className="edit-message"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            if (editDraft.trim() !== "") {
+                              void saveMessageEdit(message.id);
+                            }
+                          }}
+                        >
+                          <label
+                            className="sr-only"
+                            htmlFor={`edit-${message.id}`}
+                          >
+                            Edit message by {message.authorDisplayName}
+                          </label>
+                          <input
+                            id={`edit-${message.id}`}
+                            value={editDraft}
+                            maxLength={4000}
+                            onChange={(event) =>
+                              setEditDraft(event.target.value)
+                            }
+                          />
+                          <button
+                            type="submit"
+                            disabled={editDraft.trim() === ""}
+                          >
+                            Save edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingMessageId(null)}
+                          >
+                            Cancel edit
+                          </button>
+                        </form>
+                      ) : (
+                        <p>{message.content}</p>
+                      )}
+                      {message.deletedAt === undefined && (
+                        <>
+                          <fieldset className="reaction-list">
+                            <legend className="sr-only">Reactions</legend>
+                            {["👍", "❤️", "😂"].map((emoji) => {
+                              const reaction = message.reactions.find(
+                                (item) => item.emoji === emoji,
+                              );
+                              return (
+                                <button
+                                  key={emoji}
+                                  type="button"
+                                  aria-label={`React with ${emoji}`}
+                                  aria-pressed={reaction?.reacted ?? false}
+                                  onClick={() =>
+                                    void toggleReaction(message, emoji)
+                                  }
+                                >
+                                  {emoji}
+                                  {reaction !== undefined && (
+                                    <span>{reaction.count}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </fieldset>
+                          <div className="message-actions">
+                            <button
+                              type="button"
+                              aria-label={`Reply to ${message.authorDisplayName}`}
+                              onClick={() => setReplyingTo(message)}
+                            >
+                              Reply
+                            </button>
+                            {message.authorSubject === session.user.subject && (
+                              <button
+                                type="button"
+                                aria-label={`Edit message by ${message.authorDisplayName}`}
+                                onClick={() => {
+                                  setEditingMessageId(message.id);
+                                  setEditDraft(message.content ?? "");
+                                }}
+                              >
+                                Edit
+                              </button>
+                            )}
+                            {(message.authorSubject === session.user.subject ||
+                              activeServer.role === "owner" ||
+                              activeServer.role === "admin") && (
+                              <button
+                                type="button"
+                                aria-label={`Delete message by ${message.authorDisplayName}`}
+                                onClick={() => void removeMessage(message.id)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </article>
                   ))}
                 </div>
