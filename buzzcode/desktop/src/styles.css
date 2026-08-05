@@ -719,6 +719,11 @@ button:disabled {
   color: var(--text);
 }
 
+.server-workspace .section-heading button:disabled {
+  color: #5d6068;
+  cursor: not-allowed;
+}
+
 .server-workspace .channel-list {
   padding: 0 0.5rem;
 }
@@ -731,6 +736,57 @@ button:disabled {
 .server-workspace .channel-list button[aria-current="true"] {
   color: var(--text);
   background: #404249;
+}
+
+.projects-heading {
+  border-top: 1px solid #3a3c43;
+}
+
+.project-list {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 0 0.5rem;
+  overflow-y: auto;
+}
+
+.project-category {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.project-category-heading {
+  display: flex;
+  min-height: 1.75rem;
+  padding: 0 0.35rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-category-heading h4 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.project-category-heading button {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 1rem;
+  background: transparent;
+}
+
+.project-category-heading button:hover {
+  color: var(--text);
+}
+
+.server-workspace .project-channel-list {
+  padding: 0;
 }
 
 .server-workspace .channel-create {

@@ -13,11 +13,12 @@ const hostBinary = resolve(
 );
 
 async function stopHost(host: ChildProcess): Promise<void> {
-  if (host.exitCode !== null) return;
-  host.kill("SIGTERM");
-  await new Promise<void>((resolveExit) =>
+  if (host.exitCode !== null || host.signalCode !== null) return;
+  const exited = new Promise<void>((resolveExit) =>
     host.once("exit", () => resolveExit()),
   );
+  host.kill("SIGTERM");
+  await exited;
 }
 
 test.beforeAll(async () => {

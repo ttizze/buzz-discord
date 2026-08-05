@@ -32,6 +32,7 @@ use url::Url;
 mod direct_messages;
 mod hosts;
 mod people;
+mod projects;
 
 const SESSION_COOKIE: &str = "buzzcode_session";
 
@@ -156,6 +157,10 @@ pub(crate) enum ServerEvent {
         #[serde(skip)]
         server_id: String,
     },
+    ProjectsChanged {
+        #[serde(skip)]
+        server_id: String,
+    },
 }
 
 impl ServerEvent {
@@ -168,7 +173,8 @@ impl ServerEvent {
             | Self::ChannelAccessChanged { server_id }
             | Self::MessageCreated { server_id, .. }
             | Self::MessageChanged { server_id, .. }
-            | Self::RemoteEnvironmentsChanged { server_id } => server_id,
+            | Self::RemoteEnvironmentsChanged { server_id }
+            | Self::ProjectsChanged { server_id } => server_id,
         }
     }
 
@@ -709,6 +715,7 @@ pub async fn serve(
         .merge(direct_messages::routes())
         .merge(hosts::routes())
         .merge(people::routes())
+        .merge(projects::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(app_origin)
@@ -1534,7 +1541,7 @@ async fn list_channels(
          FILTER (WHERE channel_member.oidc_subject IS NOT NULL), ARRAY[]::TEXT[]) \
          FROM channels channel \
          LEFT JOIN channel_members channel_member ON channel_member.channel_id = channel.id \
-         WHERE channel.server_id = $1 \
+         WHERE channel.server_id = $1 AND channel.project_id IS NULL \
          AND user_can_access_channel(channel.id, $1, $2) \
          GROUP BY channel.id, channel.name, channel.visibility, channel.created_at \
          ORDER BY channel.created_at, channel.id",
@@ -1606,7 +1613,7 @@ async fn create_channel(
     let inserted = sqlx::query_scalar::<_, String>(
         "INSERT INTO channels (id, server_id, name, visibility, created_by_subject) \
          VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (server_id, name) DO NOTHING RETURNING id",
+         ON CONFLICT DO NOTHING RETURNING id",
     )
     .bind(&id)
     .bind(&server_id)
@@ -1666,15 +1673,19 @@ async fn update_channel(
         return Err(ApiError::InvalidRequest);
     }
     let mut transaction = state.pool.begin().await?;
-    let (name, current_visibility) = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, visibility FROM channels \
+    let (name, current_visibility, project_id) =
+        sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT name, visibility, project_id FROM channels \
          WHERE id = $1 AND server_id = $2 FOR UPDATE",
-    )
-    .bind(&channel_id)
-    .bind(&server_id)
-    .fetch_optional(&mut *transaction)
-    .await?
-    .ok_or(ApiError::NotFound)?;
+        )
+        .bind(&channel_id)
+        .bind(&server_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if project_id.is_some() {
+        return Err(ApiError::Conflict);
+    }
     let visibility = input
         .visibility
         .unwrap_or_else(|| current_visibility.clone());

@@ -11,15 +11,20 @@ import {
   createChannelMessage,
   createHostPairingCode,
   createInvitation,
+  createProject,
+  createProjectChannel,
   createServer,
   deleteChannelMessage,
   deleteServer,
   editChannelMessage,
   getChannelMessage,
+  type HostRepository,
   listAudit,
   listChannelMessages,
   listChannels,
+  listHostRepositories,
   listMembers,
+  listProjects,
   listRemoteEnvironments,
   listServers,
   loginUrl,
@@ -31,6 +36,7 @@ import {
   revokeRemoteEnvironment,
   type Server,
   type ServerMember,
+  type ServerProject,
   searchMentionCandidates,
   setMessageReaction,
   startDesktopLogin,
@@ -170,10 +176,13 @@ function AuthenticatedApp({
   const settingsDialog = useModalDialog();
   const channelDialog = useModalDialog();
   const channelAccessDialog = useModalDialog();
+  const projectDialog = useModalDialog();
+  const projectChannelDialog = useModalDialog();
   const [servers, setServers] = useState<readonly Server[] | null>(null);
   const [activeServer, setActiveServer] = useState<Server | null>(null);
   const [serverName, setServerName] = useState("");
   const [channels, setChannels] = useState<readonly Channel[] | null>(null);
+  const [projects, setProjects] = useState<readonly ServerProject[]>([]);
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [channelName, setChannelName] = useState("");
   const [channelVisibility, setChannelVisibility] =
@@ -184,6 +193,16 @@ function AuthenticatedApp({
   const [channelAccessMembers, setChannelAccessMembers] = useState<
     readonly string[]
   >([]);
+  const [projectName, setProjectName] = useState("");
+  const [projectEnvironmentId, setProjectEnvironmentId] = useState("");
+  const [projectRepositories, setProjectRepositories] = useState<
+    readonly HostRepository[]
+  >([]);
+  const [projectRepositoryPath, setProjectRepositoryPath] = useState("");
+  const [channelProject, setChannelProject] = useState<ServerProject | null>(
+    null,
+  );
+  const [projectChannelName, setProjectChannelName] = useState("");
   const [messages, setMessages] = useState<readonly ChannelMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<number | undefined>();
   const [messageDraft, setMessageDraft] = useState("");
@@ -328,13 +347,23 @@ function AuthenticatedApp({
   }, []);
 
   const reloadChannels = useCallback(async (serverId: string) => {
-    const loaded = await listChannels(serverId);
+    const [loaded, loadedProjects] = await Promise.all([
+      listChannels(serverId),
+      listProjects(serverId),
+    ]);
     setChannels(loaded);
+    setProjects(loadedProjects);
+    const availableChannels = [
+      ...loaded,
+      ...loadedProjects.flatMap((project) => project.channels),
+    ];
     setActiveChannel((current) => {
       const wanted =
         current?.id ??
         window.localStorage.getItem(`buzzcode.active-channel.${serverId}`);
-      const refreshed = loaded.find((channel) => channel.id === wanted);
+      const refreshed = availableChannels.find(
+        (channel) => channel.id === wanted,
+      );
       if (
         refreshed !== undefined &&
         current !== null &&
@@ -348,7 +377,7 @@ function AuthenticatedApp({
         return current;
       }
       if (refreshed !== undefined) return refreshed;
-      return loaded[0] ?? null;
+      return availableChannels[0] ?? null;
     });
   }, []);
 
@@ -453,6 +482,8 @@ function AuthenticatedApp({
           void reloadManagement(activeServer.id);
         } else if (event.type === "remoteEnvironmentsChanged") {
           void reloadRemoteEnvironments(activeServer.id);
+        } else if (event.type === "projectsChanged") {
+          void reloadChannels(activeServer.id);
         } else if (event.type === "channelCreated") {
           setChannels((existing) => {
             if (existing?.some((channel) => channel.id === event.channel.id)) {
@@ -570,6 +601,7 @@ function AuthenticatedApp({
       environmentRequestVersion.current += 1;
       messageChannelId.current = null;
       setChannels(null);
+      setProjects([]);
       setActiveChannel(null);
       setMessages([]);
       setNextBefore(undefined);
@@ -585,6 +617,12 @@ function AuthenticatedApp({
       setReplyingTo(null);
       setEditingMessageId(null);
       setChannelAccessMembers([]);
+      setProjectName("");
+      setProjectEnvironmentId("");
+      setProjectRepositories([]);
+      setProjectRepositoryPath("");
+      setChannelProject(null);
+      setProjectChannelName("");
     }
     setActiveServer(server);
     setActiveArea("server");
@@ -615,6 +653,52 @@ function AuthenticatedApp({
     setChannelVisibility("open");
     setNewChannelMembers([]);
     channelDialog.close();
+  }
+
+  async function chooseProjectEnvironment(environmentId: string) {
+    setProjectEnvironmentId(environmentId);
+    setProjectRepositoryPath("");
+    setProjectRepositories([]);
+    if (activeServer === null || environmentId === "") return;
+    setProjectRepositories(
+      await listHostRepositories(activeServer.id, environmentId),
+    );
+  }
+
+  async function addProject() {
+    if (activeServer === null) return;
+    const project = await createProject(
+      activeServer.id,
+      projectName,
+      projectEnvironmentId,
+      projectRepositoryPath,
+    );
+    setProjects((current) => [...current, project]);
+    setProjectName("");
+    setProjectEnvironmentId("");
+    setProjectRepositories([]);
+    setProjectRepositoryPath("");
+    projectDialog.close();
+  }
+
+  async function addProjectChannel() {
+    if (activeServer === null || channelProject === null) return;
+    const channel = await createProjectChannel(
+      activeServer.id,
+      channelProject.id,
+      projectChannelName,
+    );
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === channelProject.id
+          ? { ...project, channels: [...project.channels, channel] }
+          : project,
+      ),
+    );
+    setActiveChannel(channel);
+    setProjectChannelName("");
+    setChannelProject(null);
+    projectChannelDialog.close();
   }
 
   async function saveChannelAccess() {
@@ -920,6 +1004,72 @@ function AuthenticatedApp({
                 </button>
               ))}
             </nav>
+            <div className="section-heading projects-heading">
+              <h3>Projects</h3>
+              {(activeServer.role === "owner" ||
+                activeServer.role === "admin") && (
+                <button
+                  type="button"
+                  aria-label="Add Project"
+                  disabled={
+                    !remoteEnvironments.some(
+                      (environment) => environment.status === "online",
+                    )
+                  }
+                  onClick={(event) => {
+                    setProjectName("");
+                    setProjectEnvironmentId("");
+                    setProjectRepositories([]);
+                    setProjectRepositoryPath("");
+                    projectDialog.open(event.currentTarget);
+                  }}
+                >
+                  +
+                </button>
+              )}
+            </div>
+            <div className="project-list" data-testid="project-list">
+              {projects.map((project) => (
+                <section className="project-category" key={project.id}>
+                  <div className="project-category-heading">
+                    <h4>{project.name}</h4>
+                    {(activeServer.role === "owner" ||
+                      activeServer.role === "admin") && (
+                      <button
+                        type="button"
+                        aria-label={`Add Channel to ${project.name}`}
+                        onClick={(event) => {
+                          setChannelProject(project);
+                          setProjectChannelName("");
+                          projectChannelDialog.open(event.currentTarget);
+                        }}
+                      >
+                        +
+                      </button>
+                    )}
+                  </div>
+                  <nav
+                    aria-label={`${project.name} Channels`}
+                    className="channel-list project-channel-list"
+                  >
+                    {project.channels.map((channel) => (
+                      <button
+                        key={channel.id}
+                        type="button"
+                        data-channel-id={channel.id}
+                        aria-current={activeChannel?.id === channel.id}
+                        onClick={() => {
+                          setActiveChannel(channel);
+                          setNavigationOpen(false);
+                        }}
+                      >
+                        <span aria-hidden="true">#</span> {channel.name}
+                      </button>
+                    ))}
+                  </nav>
+                </section>
+              ))}
+            </div>
             <div className="current-user-panel">
               <span className="user-avatar" aria-hidden="true">
                 {session.user.displayName.slice(0, 1)}
@@ -1335,6 +1485,133 @@ function AuthenticatedApp({
                   onClick={() => void addChannel()}
                 >
                   Create Channel
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {projectDialog.isOpen && (
+          <div className="settings-backdrop">
+            <section
+              ref={projectDialog.dialogRef}
+              className="channel-dialog project-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-project-heading"
+            >
+              <header>
+                <div>
+                  <p className="eyebrow">{activeServer.name}</p>
+                  <h2 id="create-project-heading">Create Open Project</h2>
+                </div>
+                <button
+                  ref={projectDialog.closeButtonRef}
+                  type="button"
+                  aria-label="Close Create Open Project"
+                  onClick={projectDialog.close}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="channel-create">
+                <label htmlFor="project-name">Project name</label>
+                <input
+                  id="project-name"
+                  value={projectName}
+                  maxLength={100}
+                  onChange={(event) => setProjectName(event.target.value)}
+                />
+                <label htmlFor="project-environment">Remote Environment</label>
+                <select
+                  id="project-environment"
+                  value={projectEnvironmentId}
+                  onChange={(event) =>
+                    void chooseProjectEnvironment(event.target.value)
+                  }
+                >
+                  <option value="">Select an Online Remote Environment</option>
+                  {remoteEnvironments
+                    .filter((environment) => environment.status === "online")
+                    .map((environment) => (
+                      <option key={environment.id} value={environment.id}>
+                        {environment.name}
+                      </option>
+                    ))}
+                </select>
+                <label htmlFor="project-repository">Git repository</label>
+                <select
+                  id="project-repository"
+                  value={projectRepositoryPath}
+                  disabled={projectEnvironmentId === ""}
+                  onChange={(event) =>
+                    setProjectRepositoryPath(event.target.value)
+                  }
+                >
+                  <option value="">Select a Git repository</option>
+                  {projectRepositories.map((repository) => (
+                    <option key={repository.path} value={repository.path}>
+                      {repository.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={
+                    projectName.trim() === "" ||
+                    projectEnvironmentId === "" ||
+                    projectRepositoryPath === ""
+                  }
+                  onClick={() => void addProject()}
+                >
+                  Create Open Project
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {projectChannelDialog.isOpen && channelProject !== null && (
+          <div className="settings-backdrop">
+            <section
+              ref={projectChannelDialog.dialogRef}
+              className="channel-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="create-project-channel-heading"
+            >
+              <header>
+                <div>
+                  <p className="eyebrow">{channelProject.name}</p>
+                  <h2 id="create-project-channel-heading">
+                    Create Project Channel
+                  </h2>
+                </div>
+                <button
+                  ref={projectChannelDialog.closeButtonRef}
+                  type="button"
+                  aria-label="Close Create Project Channel"
+                  onClick={projectChannelDialog.close}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="channel-create">
+                <label htmlFor="project-channel-name">
+                  Project Channel name
+                </label>
+                <input
+                  id="project-channel-name"
+                  value={projectChannelName}
+                  maxLength={80}
+                  onChange={(event) =>
+                    setProjectChannelName(event.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  disabled={projectChannelName.trim() === ""}
+                  onClick={() => void addProjectChannel()}
+                >
+                  Create Project Channel
                 </button>
               </div>
             </section>

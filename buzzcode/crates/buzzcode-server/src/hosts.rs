@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -30,6 +30,19 @@ pub(crate) enum HostStatus {
 pub(crate) struct HostPresence {
     status: HostStatus,
     connection_id: String,
+    repositories: Vec<HostRepository>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct HostRepository {
+    pub(crate) name: String,
+    pub(crate) path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum HostMessage {
+    Ready { repositories: Vec<HostRepository> },
 }
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -47,6 +60,10 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/api/servers/{server_id}/remote-environments/{environment_id}",
             axum::routing::delete(revoke_remote_environment),
+        )
+        .route(
+            "/api/servers/{server_id}/remote-environments/{environment_id}/repositories",
+            get(list_host_repositories),
         )
 }
 
@@ -235,17 +252,65 @@ async fn connect_host(
     .ok_or(ApiError::Unauthorized)?;
     let connection_id = CsrfToken::new_random().secret().to_owned();
     Ok(websocket.on_upgrade(move |mut socket| async move {
+        let mut revocations = state.host_revocations.subscribe();
+        let repositories = loop {
+            tokio::select! {
+                message = socket.next() => match message {
+                    Some(Ok(Message::Text(payload))) => {
+                        let Ok(HostMessage::Ready { repositories }) =
+                            serde_json::from_str::<HostMessage>(&payload)
+                        else {
+                            let _ = socket.send(Message::Close(Some(CloseFrame {
+                                code: 1008,
+                                reason: "invalid Host ready message".into(),
+                            }))).await;
+                            return;
+                        };
+                        let mut paths = HashSet::new();
+                        let valid = repositories.len() <= 100
+                            && repositories.iter().all(|repository| {
+                                !repository.name.trim().is_empty()
+                                    && repository.name.chars().count() <= 200
+                                    && repository.path.starts_with('/')
+                                    && repository.path.len() <= 4096
+                                    && paths.insert(repository.path.clone())
+                            });
+                        if !valid {
+                            let _ = socket.send(Message::Close(Some(CloseFrame {
+                                code: 1008,
+                                reason: "invalid Host repositories".into(),
+                            }))).await;
+                            return;
+                        }
+                        break repositories;
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                    Some(Ok(_)) => {}
+                },
+                revocation = revocations.recv() => match revocation {
+                    Ok(revoked_id) if revoked_id == environment_id => {
+                        let _ = socket.send(Message::Close(Some(CloseFrame {
+                            code: 1008,
+                            reason: "revoked".into(),
+                        }))).await;
+                        return;
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        };
         state.host_presence.write().await.insert(
             environment_id.clone(),
             HostPresence {
                 status: HostStatus::Online,
                 connection_id: connection_id.clone(),
+                repositories,
             },
         );
         let _ = state.changes.send(ServerEvent::RemoteEnvironmentsChanged {
             server_id: server_id.clone(),
         });
-        let mut revocations = state.host_revocations.subscribe();
         let revoked = loop {
             tokio::select! {
                 message = socket.next() => match message {
@@ -276,11 +341,16 @@ async fn connect_host(
             presence.remove(&environment_id);
             return;
         }
+        let repositories = presence
+            .get(&environment_id)
+            .map(|value| value.repositories.clone())
+            .unwrap_or_default();
         presence.insert(
             environment_id.clone(),
             HostPresence {
                 status: HostStatus::Reconnecting,
                 connection_id: connection_id.clone(),
+                repositories,
             },
         );
         drop(presence);
@@ -302,6 +372,46 @@ async fn connect_host(
             }
         });
     }))
+}
+
+pub(crate) async fn repositories_for_online_host(
+    state: &AppState,
+    server_id: &str,
+    environment_id: &str,
+) -> Result<Vec<HostRepository>, ApiError> {
+    let belongs_to_server = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM remote_environments \
+         WHERE id = $1 AND server_id = $2 AND revoked_at IS NULL)",
+    )
+    .bind(environment_id)
+    .bind(server_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !belongs_to_server {
+        return Err(ApiError::NotFound);
+    }
+    let presence = state.host_presence.read().await;
+    match presence.get(environment_id) {
+        Some(HostPresence {
+            status: HostStatus::Online,
+            repositories,
+            ..
+        }) => Ok(repositories.clone()),
+        _ => Err(ApiError::Conflict),
+    }
+}
+
+async fn list_host_repositories(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, environment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<HostRepository>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_manager(&state.pool, &subject, &server_id).await?;
+    Ok(Json(
+        repositories_for_online_host(&state, &server_id, &environment_id).await?,
+    ))
 }
 
 async fn revoke_remote_environment(

@@ -12,6 +12,7 @@ export type ServerEvent =
   | Readonly<{ type: "channelCreated"; channel: Channel }>
   | Readonly<{ type: "channelAccessChanged" }>
   | Readonly<{ type: "remoteEnvironmentsChanged" }>
+  | Readonly<{ type: "projectsChanged" }>
   | Readonly<{ type: "messageCreated"; message: ChannelMessage }>
   | Readonly<{
       type: "messageChanged";
@@ -158,6 +159,20 @@ export type RemoteEnvironment = Readonly<{
   lastSeenAt?: string;
 }>;
 
+export type HostRepository = Readonly<{
+  name: string;
+  path: string;
+}>;
+
+export type ServerProject = Readonly<{
+  id: string;
+  name: string;
+  remoteEnvironmentId: string;
+  repositoryPath: string;
+  visibility: "open";
+  channels: readonly Channel[];
+}>;
+
 export type AuditEntry = Readonly<{
   id: number;
   actorSubject: string;
@@ -220,7 +235,8 @@ function parseServerEvent(value: unknown): ServerEvent {
     (value.type === "membershipChanged" ||
       value.type === "serverDeleted" ||
       value.type === "channelAccessChanged" ||
-      value.type === "remoteEnvironmentsChanged")
+      value.type === "remoteEnvironmentsChanged" ||
+      value.type === "projectsChanged")
   ) {
     return { type: value.type };
   }
@@ -488,6 +504,39 @@ function parseRemoteEnvironment(value: unknown): RemoteEnvironment {
     ...(typeof value.lastSeenAt === "string"
       ? { lastSeenAt: value.lastSeenAt }
       : {}),
+  };
+}
+
+function parseHostRepository(value: unknown): HostRepository {
+  if (
+    !isRecord(value) ||
+    typeof value.name !== "string" ||
+    typeof value.path !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Host repository");
+  }
+  return { name: value.name, path: value.path };
+}
+
+function parseServerProject(value: unknown): ServerProject {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.remoteEnvironmentId !== "string" ||
+    typeof value.repositoryPath !== "string" ||
+    value.visibility !== "open" ||
+    !Array.isArray(value.channels)
+  ) {
+    throw new Error("Buzzcode API returned an invalid Server Project");
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    remoteEnvironmentId: value.remoteEnvironmentId,
+    repositoryPath: value.repositoryPath,
+    visibility: value.visibility,
+    channels: value.channels.map(parseChannel),
   };
 }
 
@@ -1008,6 +1057,76 @@ export async function revokeRemoteEnvironment(
     { method: "DELETE", credentials: "include" },
   );
   if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+}
+
+export async function listHostRepositories(
+  serverId: string,
+  environmentId: string,
+): Promise<readonly HostRepository[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/remote-environments/${encodeURIComponent(environmentId)}/repositories`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid Host repository list");
+  }
+  return value.map(parseHostRepository);
+}
+
+export async function listProjects(
+  serverId: string,
+): Promise<readonly ServerProject[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/projects`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid Project list");
+  }
+  return value.map(parseServerProject);
+}
+
+export async function createProject(
+  serverId: string,
+  name: string,
+  remoteEnvironmentId: string,
+  repositoryPath: string,
+): Promise<ServerProject> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/projects`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, remoteEnvironmentId, repositoryPath }),
+      },
+    ),
+    parseServerProject,
+  );
+}
+
+export async function createProjectChannel(
+  serverId: string,
+  projectId: string,
+  name: string,
+): Promise<Channel> {
+  return parseResponse(
+    await fetch(
+      `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/projects/${encodeURIComponent(projectId)}/channels`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+    ),
+    parseChannel,
+  );
 }
 
 export async function acceptInvitation(token: string): Promise<Server> {

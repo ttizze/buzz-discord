@@ -56,14 +56,18 @@ cargo build --release -p buzzcode-host
   --name 'Production VPS 1' \
   --state /var/lib/buzzcode-host/state.json
 ./target/release/buzzcode-host run \
-  --state /var/lib/buzzcode-host/state.json
+  --state /var/lib/buzzcode-host/state.json \
+  --repository /srv/projects/buzzcode \
+  --repository /srv/projects/another-repository
 ```
 
 Run the second command under the VPS service manager with automatic restart.
 The state file is created with owner-only permissions and binds that Host
 installation to exactly one Server. A Server may have multiple Hosts. The Host
 opens an authenticated outbound WebSocket; Buzzcode does not need the VPS SSH
-private key or an inbound Host port.
+private key or an inbound Host port. Each `--repository` path must resolve to a
+Git work tree; non-Git paths are ignored. While the Host is Online, an Owner or
+Admin can select one of these repositories when creating an Open Project.
 
 ## Quality gates
 
