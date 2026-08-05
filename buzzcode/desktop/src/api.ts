@@ -184,6 +184,11 @@ export type ServerProject = Readonly<{
   channels: readonly Channel[];
 }>;
 
+export type ProjectFileEntry = Readonly<{
+  name: string;
+  kind: "directory" | "file";
+}>;
+
 export type AuditEntry = Readonly<{
   id: number;
   actorSubject: string;
@@ -554,6 +559,17 @@ function parseServerProject(value: unknown): ServerProject {
     visibility: value.visibility,
     channels: value.channels.map(parseChannel),
   };
+}
+
+function parseProjectFileEntry(value: unknown): ProjectFileEntry {
+  if (
+    !isRecord(value) ||
+    typeof value.name !== "string" ||
+    !["directory", "file"].includes(String(value.kind))
+  ) {
+    throw new Error("Buzzcode API returned an invalid Project file");
+  }
+  return { name: value.name, kind: value.kind as ProjectFileEntry["kind"] };
 }
 
 function parseAuditEntry(value: unknown): AuditEntry {
@@ -1138,9 +1154,25 @@ export async function listProjects(
   return value.map(parseServerProject);
 }
 
+export async function listProjectFiles(
+  serverId: string,
+  projectId: string,
+): Promise<readonly ProjectFileEntry[]> {
+  const response = await fetch(
+    `${apiOrigin}/api/servers/${encodeURIComponent(serverId)}/projects/${encodeURIComponent(projectId)}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid Project file list");
+  }
+  return value.map(parseProjectFileEntry);
+}
+
 export async function createProject(
   serverId: string,
-  computerId: string,
+  computerCredential: string,
   folderPath: string,
 ): Promise<ServerProject> {
   return parseResponse(
@@ -1149,8 +1181,11 @@ export async function createProject(
       {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ computerId, folderPath }),
+        headers: {
+          "content-type": "application/json",
+          "x-buzzcode-computer-credential": computerCredential,
+        },
+        body: JSON.stringify({ folderPath }),
       },
     ),
     parseServerProject,

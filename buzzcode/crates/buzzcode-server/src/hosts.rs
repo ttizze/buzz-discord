@@ -20,6 +20,9 @@ use tokio::{
 
 use crate::{ApiError, AppState, ServerEvent, require_origin, require_session, token_hash};
 
+const HOST_COMMAND_QUEUE_CAPACITY: usize = 64;
+const HOST_CONTROL_QUEUE_CAPACITY: usize = 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostStatus {
     Online,
@@ -30,7 +33,8 @@ pub(crate) enum HostStatus {
 pub(crate) struct HostPresence {
     pub(crate) status: HostStatus,
     connection_id: String,
-    commands: mpsc::UnboundedSender<ServerHostMessage>,
+    commands: mpsc::Sender<ServerHostMessage>,
+    control_commands: mpsc::Sender<ServerHostMessage>,
     inbound: broadcast::Sender<ClientHostMessage>,
     pub(crate) agents: Vec<AgentDescriptor>,
 }
@@ -40,6 +44,13 @@ pub(crate) struct HostPresence {
 pub(crate) struct AgentDescriptor {
     pub(crate) id: String,
     pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectFileEntry {
+    pub(crate) name: String,
+    pub(crate) kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +63,10 @@ enum ClientHostMessage {
         request_id: String,
         path: String,
         name: String,
+    },
+    FolderListed {
+        request_id: String,
+        entries: Vec<ProjectFileEntry>,
     },
     AgentOpened {
         run_id: String,
@@ -71,6 +86,10 @@ enum ClientHostMessage {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerHostMessage {
     BindFolder {
+        request_id: String,
+        path: String,
+    },
+    ListFolder {
         request_id: String,
         path: String,
     },
@@ -301,7 +320,7 @@ async fn list_computers(
                         match presence.get(&id).map(|value| value.status) {
                             Some(HostStatus::Online) => "online",
                             Some(HostStatus::Reconnecting) => "reconnecting",
-                            None if recently_seen => "online",
+                            None if recently_seen => "reconnecting",
                             None => "offline",
                         }
                     };
@@ -365,7 +384,9 @@ async fn connect_host(
                 }
             }
         };
-        let (commands, mut command_rx) = mpsc::unbounded_channel();
+        let (commands, mut command_rx) = mpsc::channel(HOST_COMMAND_QUEUE_CAPACITY);
+        let (control_commands, mut control_command_rx) =
+            mpsc::channel(HOST_CONTROL_QUEUE_CAPACITY);
         let (inbound, _) = broadcast::channel(128);
         state.host_presence.write().await.insert(
             computer_id.clone(),
@@ -373,6 +394,7 @@ async fn connect_host(
                 status: HostStatus::Online,
                 connection_id: connection_id.clone(),
                 commands,
+                control_commands,
                 inbound: inbound.clone(),
                 agents,
             },
@@ -381,6 +403,16 @@ async fn connect_host(
         let (mut socket_tx, mut socket_rx) = socket.split();
         let revoked = loop {
             tokio::select! {
+                biased;
+                command = control_command_rx.recv() => match command {
+                    Some(command) => {
+                        let Ok(payload) = serde_json::to_string(&command) else { break false };
+                        if socket_tx.send(Message::Text(payload.into())).await.is_err() {
+                            break false;
+                        }
+                    }
+                    None => break false,
+                },
                 message = socket_rx.next() => match message {
                     Some(Ok(Message::Text(payload))) => {
                         match serde_json::from_str::<ClientHostMessage>(&payload) {
@@ -432,7 +464,8 @@ async fn connect_host(
             HostPresence {
                 status: HostStatus::Reconnecting,
                 connection_id: connection_id.clone(),
-                commands: mpsc::unbounded_channel().0,
+                commands: mpsc::channel(1).0,
+                control_commands: mpsc::channel(1).0,
                 inbound: broadcast::channel(1).0,
                 agents: Vec::new(),
             },
@@ -477,7 +510,7 @@ pub(crate) async fn bind_project_folder(
     let request_id = CsrfToken::new_random().secret().to_owned();
     let mut inbound = host.inbound.subscribe();
     host.commands
-        .send(ServerHostMessage::BindFolder {
+        .try_send(ServerHostMessage::BindFolder {
             request_id: request_id.clone(),
             path: path.to_owned(),
         })
@@ -490,6 +523,40 @@ pub(crate) async fn bind_project_folder(
                     path,
                     name,
                 }) if response_id == request_id => return Ok((path, name)),
+                Ok(ClientHostMessage::Error {
+                    request_id: Some(response_id),
+                    ..
+                }) if response_id == request_id => return Err(ApiError::InvalidRequest),
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return Err(ApiError::Conflict),
+            }
+        }
+    })
+    .await
+    .map_err(|_| ApiError::Conflict)?
+}
+
+pub(crate) async fn list_project_folder(
+    state: &AppState,
+    computer_id: &str,
+    path: &str,
+) -> Result<Vec<ProjectFileEntry>, ApiError> {
+    let host = connected_host(state, computer_id).await?;
+    let request_id = CsrfToken::new_random().secret().to_owned();
+    let mut inbound = host.inbound.subscribe();
+    host.commands
+        .try_send(ServerHostMessage::ListFolder {
+            request_id: request_id.clone(),
+            path: path.to_owned(),
+        })
+        .map_err(|_| ApiError::Conflict)?;
+    timeout(Duration::from_secs(10), async move {
+        loop {
+            match inbound.recv().await {
+                Ok(ClientHostMessage::FolderListed {
+                    request_id: response_id,
+                    entries,
+                }) if response_id == request_id => return Ok(entries),
                 Ok(ClientHostMessage::Error {
                     request_id: Some(response_id),
                     ..
@@ -556,7 +623,7 @@ pub(crate) async fn run_acp_prompt(
     let run_id = CsrfToken::new_random().secret().to_owned();
     let mut inbound = host.inbound.subscribe();
     host.commands
-        .send(ServerHostMessage::OpenAgent {
+        .try_send(ServerHostMessage::OpenAgent {
             run_id: run_id.clone(),
             agent_id: agent_id.to_owned(),
             cwd: folder_path.to_owned(),
@@ -568,7 +635,7 @@ pub(crate) async fn run_acp_prompt(
         })
         .await?;
         host.commands
-            .send(ServerHostMessage::Acp {
+            .try_send(ServerHostMessage::Acp {
                 run_id: run_id.clone(),
                 message: acp_request(
                     1,
@@ -592,7 +659,7 @@ pub(crate) async fn run_acp_prompt(
             return Err("Agent does not support ACP v1".to_owned());
         }
         host.commands
-            .send(ServerHostMessage::Acp {
+            .try_send(ServerHostMessage::Acp {
                 run_id: run_id.clone(),
                 message: acp_request(
                     2,
@@ -613,7 +680,7 @@ pub(crate) async fn run_acp_prompt(
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "Agent session creation failed".to_owned())?;
         host.commands
-            .send(ServerHostMessage::Acp {
+            .try_send(ServerHostMessage::Acp {
                 run_id: run_id.clone(),
                 message: acp_request(
                     3,
@@ -659,7 +726,10 @@ pub(crate) async fn run_acp_prompt(
         }
     }
     .await;
-    let _ = host.commands.send(ServerHostMessage::CloseAgent { run_id });
+    let _ = host
+        .control_commands
+        .send(ServerHostMessage::CloseAgent { run_id })
+        .await;
     result
 }
 

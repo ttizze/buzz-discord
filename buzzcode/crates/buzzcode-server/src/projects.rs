@@ -11,8 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ApiError, AppState, ChannelSummary, ServerEvent,
-    hosts::{bind_project_folder, computer_recently_seen, computer_status},
-    require_manager, require_member, require_origin, require_session,
+    hosts::{
+        ProjectFileEntry, bind_project_folder, computer_recently_seen, computer_status,
+        list_project_folder,
+    },
+    require_manager, require_member, require_origin, require_session, token_hash,
 };
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
@@ -22,15 +25,51 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             get(list_projects).post(create_project),
         )
         .route(
+            "/api/servers/{server_id}/projects/{project_id}",
+            get(list_project_files),
+        )
+        .route(
             "/api/servers/{server_id}/projects/{project_id}/channels",
             axum::routing::post(create_project_channel),
         )
+        .route(
+            "/api/host/projects",
+            axum::routing::post(create_host_project),
+        )
+}
+
+async fn list_project_files(
+    State(state): State<Arc<AppState>>,
+    Path((server_id, project_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ProjectFileEntry>>, ApiError> {
+    require_origin(&state.auth, &headers)?;
+    let subject = require_session(&state.pool, &headers).await?;
+    require_member(&state.pool, &subject, &server_id).await?;
+    let (computer_id, folder_path) = sqlx::query_as::<_, (String, String)>(
+        "SELECT computer_id, folder_path FROM server_projects \
+         WHERE server_id = $1 AND id = $2 AND visibility = 'open'",
+    )
+    .bind(&server_id)
+    .bind(&project_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    Ok(Json(
+        list_project_folder(&state, &computer_id, &folder_path).await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct CreateProject {
-    computer_id: String,
+    folder_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CreateHostProject {
+    server_id: String,
     folder_path: String,
 }
 
@@ -99,7 +138,7 @@ async fn list_projects(
         } else if connected_status != "offline" {
             connected_status.to_owned()
         } else if computer_recently_seen(&state, &computer_id).await? {
-            "online".to_owned()
+            "reconnecting".to_owned()
         } else {
             "offline".to_owned()
         };
@@ -126,21 +165,79 @@ async fn create_project(
     require_origin(&state.auth, &headers)?;
     let subject = require_session(&state.pool, &headers).await?;
     require_manager(&state.pool, &subject, &server_id).await?;
-    let computer_id = input.computer_id.trim();
     let folder_path = input.folder_path.trim();
-    if computer_id.is_empty() || folder_path.is_empty() || folder_path.len() > 4096 {
+    if folder_path.is_empty() || folder_path.len() > 4096 {
         return Err(ApiError::InvalidRequest);
     }
-    let computer_name = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM computers \
-         WHERE id = $1 AND owner_subject = $2 AND revoked_at IS NULL",
+    let computer_credential = headers
+        .get("x-buzzcode-computer-credential")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::Forbidden)?;
+    let (computer_id, computer_name) = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, name FROM computers \
+         WHERE owner_subject = $1 AND credential_hash = $2 AND revoked_at IS NULL",
     )
-    .bind(computer_id)
     .bind(&subject)
+    .bind(token_hash(computer_credential))
     .fetch_optional(&state.pool)
     .await?
-    .ok_or(ApiError::NotFound)?;
-    let (folder_path, name) = bind_project_folder(&state, computer_id, folder_path).await?;
+    .ok_or(ApiError::Forbidden)?;
+    create_project_on_computer(
+        &state,
+        &server_id,
+        &subject,
+        computer_id,
+        computer_name,
+        folder_path,
+    )
+    .await
+}
+
+async fn create_host_project(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<CreateHostProject>,
+) -> Result<(StatusCode, Json<ProjectSummary>), ApiError> {
+    let credential = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::Unauthorized)?;
+    let (computer_id, subject, computer_name) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, owner_subject, name FROM computers \
+             WHERE credential_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(token_hash(credential))
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(ApiError::Unauthorized)?;
+    let server_id = input.server_id.trim();
+    require_manager(&state.pool, &subject, server_id).await?;
+    create_project_on_computer(
+        &state,
+        server_id,
+        &subject,
+        computer_id,
+        computer_name,
+        input.folder_path.trim(),
+    )
+    .await
+}
+
+async fn create_project_on_computer(
+    state: &AppState,
+    server_id: &str,
+    subject: &str,
+    computer_id: String,
+    computer_name: String,
+    folder_path: &str,
+) -> Result<(StatusCode, Json<ProjectSummary>), ApiError> {
+    if server_id.is_empty() || folder_path.is_empty() || folder_path.len() > 4096 {
+        return Err(ApiError::InvalidRequest);
+    }
+    let (folder_path, name) = bind_project_folder(state, &computer_id, folder_path).await?;
     if name.is_empty() || name.chars().count() > 100 {
         return Err(ApiError::InvalidRequest);
     }
@@ -152,11 +249,11 @@ async fn create_project(
          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
     )
     .bind(&id)
-    .bind(&server_id)
-    .bind(computer_id)
+    .bind(server_id)
+    .bind(&computer_id)
     .bind(&name)
     .bind(&folder_path)
-    .bind(&subject)
+    .bind(subject)
     .execute(&mut *transaction)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -168,10 +265,10 @@ async fn create_project(
              'projectId', $3::TEXT, 'computerId', $4::TEXT, \
              'folderPath', $5::TEXT, 'visibility', 'open'))",
     )
-    .bind(&server_id)
-    .bind(&subject)
+    .bind(server_id)
+    .bind(subject)
     .bind(&id)
-    .bind(computer_id)
+    .bind(&computer_id)
     .bind(&folder_path)
     .execute(&mut *transaction)
     .await?;
@@ -179,16 +276,16 @@ async fn create_project(
     let project = ProjectSummary {
         id,
         name,
-        computer_id: computer_id.to_owned(),
+        computer_id,
         computer_name,
         computer_status: "online".to_owned(),
         folder_path,
         visibility: "open",
         channels: Vec::new(),
     };
-    let _ = state
-        .changes
-        .send(ServerEvent::ProjectsChanged { server_id });
+    let _ = state.changes.send(ServerEvent::ProjectsChanged {
+        server_id: server_id.to_owned(),
+    });
     Ok((StatusCode::CREATED, Json(project)))
 }
 

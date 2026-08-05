@@ -40,9 +40,15 @@ test("adds the selected folder as an Open Project without asking for a name", as
 }) => {
   const directory = await mkdtemp(join(tmpdir(), "buzzcode-project-e2e-"));
   const folderPath = join(directory, "ordinary-folder");
+  const otherFolderPath = join(directory, "other-computer-folder");
   const statePath = join(directory, "desktop-host.json");
+  const otherStatePath = join(directory, "other-host.json");
   let host: ChildProcess | undefined;
+  let otherHost: ChildProcess | undefined;
   await mkdir(folderPath);
+  await mkdir(join(folderPath, "src"));
+  await writeFile(join(folderPath, "README.md"), "Bound Computer file\n");
+  await mkdir(otherFolderPath);
   const canonicalFolderPath = await realpath(folderPath);
   await page.addInitScript(
     ({ selectedFolder }) => {
@@ -74,18 +80,35 @@ test("adds the selected folder as an Open Project without asking for a name", as
       .getAttribute("data-server-id");
     expect(serverId).toBeTruthy();
 
-    const registration = await page.evaluate(async (origin) => {
-      const response = await fetch(`${origin}/api/computers/register`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          installationId: "owner-mac-installation",
-          name: "Owner Mac",
-        }),
-      });
-      return response.json();
-    }, harness.apiOrigin);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window as Window & {
+                __BUZZCODE_E2E_COMPUTER_REGISTRATION__?: {
+                  id: string;
+                  credential: string;
+                };
+              }
+            ).__BUZZCODE_E2E_COMPUTER_REGISTRATION__,
+        ),
+      )
+      .not.toBeUndefined();
+    const registration = await page.evaluate(
+      () =>
+        (
+          window as Window & {
+            __BUZZCODE_E2E_COMPUTER_REGISTRATION__?: {
+              id: string;
+              credential: string;
+            };
+          }
+        ).__BUZZCODE_E2E_COMPUTER_REGISTRATION__,
+    );
+    expect(registration).toBeDefined();
+    if (registration === undefined)
+      throw new Error("Computer did not register");
     await writeFile(
       statePath,
       JSON.stringify({
@@ -125,7 +148,18 @@ test("adds the selected folder as an Open Project without asking for a name", as
     await expect(
       page.getByRole("heading", { name: "ordinary-folder" }),
     ).toBeVisible();
-
+    await page
+      .getByRole("button", { name: "Open Project ordinary-folder" })
+      .click();
+    await expect(page.getByTestId("active-project-name")).toHaveText(
+      "ordinary-folder",
+    );
+    await expect(
+      page.getByRole("list", { name: "Project files" }),
+    ).toContainText("README.md");
+    await expect(
+      page.getByRole("list", { name: "Project files" }),
+    ).toContainText("src");
     const projects = await page.evaluate(
       async ({ id, origin }) => {
         const response = await fetch(`${origin}/api/servers/${id}/projects`, {
@@ -150,9 +184,87 @@ test("adds the selected folder as an Open Project without asking for a name", as
       ],
     });
 
+    const otherComputer = await page.evaluate(async (origin) => {
+      const pairingCode = await (
+        await fetch(`${origin}/api/host-pairing-codes`, {
+          method: "POST",
+          credentials: "include",
+        })
+      ).json();
+      return (
+        await fetch(`${origin}/api/hosts/pair`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            pairingCode: pairingCode.code,
+            installationId: "other-computer-installation",
+            name: "Other Computer",
+          }),
+        })
+      ).json();
+    }, harness.apiOrigin);
+    await writeFile(
+      otherStatePath,
+      JSON.stringify({
+        computerId: otherComputer.computerId,
+        apiOrigin: harness.apiOrigin,
+        credential: otherComputer.credential,
+        installationId: "other-computer-installation",
+        name: "Other Computer",
+      }),
+    );
+    otherHost = spawn(hostBinary, ["run", "--state", otherStatePath], {
+      stdio: "ignore",
+    });
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          async ({ computerId, origin }) => {
+            const computers = await (
+              await fetch(`${origin}/api/computers`, {
+                credentials: "include",
+              })
+            ).json();
+            return computers.find(
+              (computer: { id: string }) => computer.id === computerId,
+            )?.status;
+          },
+          { computerId: otherComputer.computerId, origin: harness.apiOrigin },
+        ),
+      )
+      .toBe("online");
+    const selectedOtherComputerStatus = await page.evaluate(
+      async ({
+        computerCredential,
+        computerId,
+        folderPath,
+        origin,
+        serverId,
+      }) =>
+        (
+          await fetch(`${origin}/api/servers/${serverId}/projects`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "content-type": "application/json",
+              "x-buzzcode-computer-credential": computerCredential,
+            },
+            body: JSON.stringify({ computerId, folderPath }),
+          })
+        ).status,
+      {
+        computerCredential: registration.credential,
+        computerId: otherComputer.computerId,
+        folderPath: otherFolderPath,
+        origin: harness.apiOrigin,
+        serverId,
+      },
+    );
+    expect(selectedOtherComputerStatus).toBe(422);
+
     const firstProject = projects.body[0];
     const secondServer = await page.evaluate(
-      async ({ computerId, folderPath, origin }) => {
+      async ({ computerCredential, folderPath, origin }) => {
         const serverResponse = await fetch(`${origin}/api/servers`, {
           method: "POST",
           credentials: "include",
@@ -165,11 +277,11 @@ test("adds the selected folder as an Open Project without asking for a name", as
           {
             method: "POST",
             credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              computerId,
-              folderPath,
-            }),
+            headers: {
+              "content-type": "application/json",
+              "x-buzzcode-computer-credential": computerCredential,
+            },
+            body: JSON.stringify({ folderPath }),
           },
         );
         return {
@@ -178,7 +290,7 @@ test("adds the selected folder as an Open Project without asking for a name", as
         };
       },
       {
-        computerId: firstProject.computerId,
+        computerCredential: registration.credential,
         folderPath,
         origin: harness.apiOrigin,
       },
@@ -270,20 +382,23 @@ test("adds the selected folder as an Open Project without asking for a name", as
       await expect(
         member.getByRole("button", { name: "implementation" }),
       ).toBeVisible();
+      await member
+        .getByRole("button", { name: "Open Project ordinary-folder" })
+        .click();
+      await expect(
+        member.getByRole("list", { name: "Project files" }),
+      ).toContainText("README.md");
       await expect(
         member.getByRole("button", { name: "Add Project" }),
       ).toHaveCount(0);
       const forbidden = await member.evaluate(
-        async ({ computerId, folderPath, origin, projectId, serverId }) => {
+        async ({ folderPath, origin, projectId, serverId }) => {
           const projectStatus = (
             await fetch(`${origin}/api/servers/${serverId}/projects`, {
               method: "POST",
               credentials: "include",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                computerId,
-                folderPath,
-              }),
+              body: JSON.stringify({ folderPath }),
             })
           ).status;
           const channelStatus = (
@@ -300,14 +415,16 @@ test("adds the selected folder as an Open Project without asking for a name", as
           return { channelStatus, projectStatus };
         },
         {
-          computerId: firstProject.computerId,
           folderPath,
           origin: harness.apiOrigin,
           projectId: firstProject.id,
           serverId,
         },
       );
-      expect(forbidden).toEqual({ channelStatus: 403, projectStatus: 403 });
+      expect(forbidden).toEqual({
+        channelStatus: 403,
+        projectStatus: 403,
+      });
     } finally {
       await memberContext.close();
     }
@@ -351,11 +468,29 @@ test("adds the selected folder as an Open Project without asking for a name", as
         channels: [expect.objectContaining({ name: "implementation" })],
       }),
     ]);
+    await page
+      .getByRole("button", { name: "Open Project ordinary-folder" })
+      .click();
+    await expect(
+      page.getByText("Files are unavailable while Owner Mac is offline."),
+    ).toBeVisible();
+    const offlineAgents = await page.evaluate(
+      async ({ channelId, origin, serverId }) =>
+        (
+          await fetch(
+            `${origin}/api/servers/${serverId}/channels/${channelId}/agent-mention-suggestions?q=codex`,
+            { credentials: "include" },
+          )
+        ).json(),
+      { channelId: channel.id, origin: harness.apiOrigin, serverId },
+    );
+    expect(offlineAgents).toEqual([]);
     await expect(
       page.getByRole("button", { name: "Add Project" }),
     ).toBeDisabled();
   } finally {
     await stopHost(host);
+    await stopHost(otherHost);
     await rm(directory, { recursive: true, force: true });
   }
 });

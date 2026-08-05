@@ -72,6 +72,18 @@ creating Computer automatically; it never asks the user to select a VPS or Host.
 Project metadata, Channels, and chat remain available while that Computer is
 Offline, while file access and Agents wait for the Computer to reconnect.
 
+On a headless VPS, add its local folder from that VPS after pairing:
+
+```bash
+./target/release/buzzcode-host project add \
+  --state /var/lib/buzzcode-host/state.json \
+  --server-id '<server-id>' \
+  --folder /srv/project
+```
+
+The Host credential identifies the creating Computer implicitly; the command
+does not accept another Computer or Host as a destination.
+
 ## Quality gates
 
 ```bash

@@ -104,17 +104,17 @@ test("routes a Project Channel Agent Mention through its bound Computer over ACP
       )
       .toBe("online");
     const created = await page.evaluate(
-      async ({ computerId, folderPath, origin, serverId }) => {
+      async ({ computerCredential, folderPath, origin, serverId }) => {
         const projectResponse = await fetch(
           `${origin}/api/servers/${serverId}/projects`,
           {
             method: "POST",
             credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              computerId,
-              folderPath,
-            }),
+            headers: {
+              "content-type": "application/json",
+              "x-buzzcode-computer-credential": computerCredential,
+            },
+            body: JSON.stringify({ folderPath }),
           },
         );
         const project = await projectResponse.json();
@@ -134,7 +134,7 @@ test("routes a Project Channel Agent Mention through its bound Computer over ACP
         };
       },
       {
-        computerId: pairing.computerId,
+        computerCredential: pairing.credential,
         folderPath: projectFolder,
         origin: harness.apiOrigin,
         serverId,

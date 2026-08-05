@@ -10,6 +10,10 @@ type E2eComputer = ComputerIdentity & Readonly<{ selectedFolder: string }>;
 declare global {
   interface Window {
     __BUZZCODE_E2E_COMPUTER__?: E2eComputer;
+    __BUZZCODE_E2E_COMPUTER_REGISTRATION__?: Readonly<{
+      id: string;
+      credential: string;
+    }>;
   }
 }
 
@@ -42,6 +46,12 @@ export async function startComputerHost(
   computerId: string,
   credential: string,
 ): Promise<void> {
-  if (import.meta.env.MODE === "e2e") return;
+  if (import.meta.env.MODE === "e2e") {
+    window.__BUZZCODE_E2E_COMPUTER_REGISTRATION__ = {
+      id: computerId,
+      credential,
+    };
+    return;
+  }
   await invoke("start_computer_host", { apiOrigin, computerId, credential });
 }

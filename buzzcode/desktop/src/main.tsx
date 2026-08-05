@@ -27,11 +27,13 @@ import {
   listChannels,
   listComputers,
   listMembers,
+  listProjectFiles,
   listProjects,
   listServers,
   loginUrl,
   logout,
   type MentionInput,
+  type ProjectFileEntry,
   readAuthSession,
   readDurableState,
   registerComputer,
@@ -223,6 +225,13 @@ function AuthenticatedApp({
   const [serverName, setServerName] = useState("");
   const [channels, setChannels] = useState<readonly Channel[] | null>(null);
   const [projects, setProjects] = useState<readonly ServerProject[]>([]);
+  const [activeProject, setActiveProject] = useState<ServerProject | null>(
+    null,
+  );
+  const [projectFiles, setProjectFiles] = useState<readonly ProjectFileEntry[]>(
+    [],
+  );
+  const [projectFilesError, setProjectFilesError] = useState("");
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [channelName, setChannelName] = useState("");
   const [channelVisibility, setChannelVisibility] =
@@ -264,6 +273,7 @@ function AuthenticatedApp({
   const managementRequestVersion = useRef(0);
   const computerRequestVersion = useRef(0);
   const localComputerId = useRef<string | null>(null);
+  const localComputerCredential = useRef<string | null>(null);
   const messageChannelId = useRef<string | null>(null);
   const messageInputRef = useRef<HTMLInputElement | null>(null);
   const navigationToggle = useRef<HTMLButtonElement | null>(null);
@@ -399,6 +409,7 @@ function AuthenticatedApp({
         identity.name,
       );
       localComputerId.current = registration.id;
+      localComputerCredential.current = registration.credential;
       await startComputerHost(
         buzzcodeApiOrigin(),
         registration.id,
@@ -431,6 +442,11 @@ function AuthenticatedApp({
     ]);
     setChannels(loaded);
     setProjects(loadedProjects);
+    setActiveProject((current) =>
+      current === null
+        ? null
+        : (loadedProjects.find((project) => project.id === current.id) ?? null),
+    );
     const availableChannels = [
       ...loaded,
       ...loadedProjects.flatMap((project) => project.channels),
@@ -458,6 +474,29 @@ function AuthenticatedApp({
       return availableChannels[0] ?? null;
     });
   }, []);
+
+  useEffect(() => {
+    let current = true;
+    if (activeProject === null || activeServer === null) return;
+    setProjectFiles([]);
+    if (activeProject.computerStatus !== "online") {
+      setProjectFilesError(
+        `Files are unavailable while ${activeProject.computerName} is ${activeProject.computerStatus}.`,
+      );
+      return;
+    }
+    setProjectFilesError("");
+    void listProjectFiles(activeServer.id, activeProject.id)
+      .then((files) => {
+        if (current) setProjectFiles(files);
+      })
+      .catch(() => {
+        if (current) setProjectFilesError("Project files are unavailable.");
+      });
+    return () => {
+      current = false;
+    };
+  }, [activeProject, activeServer]);
 
   useEffect(() => {
     window.localStorage.setItem("buzzcode.active-area", activeArea);
@@ -692,6 +731,9 @@ function AuthenticatedApp({
       messageChannelId.current = null;
       setChannels(null);
       setProjects([]);
+      setActiveProject(null);
+      setProjectFiles([]);
+      setProjectFilesError("");
       setActiveChannel(null);
       setMessages([]);
       setNextBefore(undefined);
@@ -734,6 +776,7 @@ function AuthenticatedApp({
       channel,
     ]);
     setActiveChannel(channel);
+    setActiveProject(null);
     setChannelName("");
     setChannelVisibility("open");
     setNewChannelMembers([]);
@@ -741,12 +784,17 @@ function AuthenticatedApp({
   }
 
   async function addProject() {
-    if (activeServer === null || currentComputer === null) return;
+    if (
+      activeServer === null ||
+      currentComputer === null ||
+      localComputerCredential.current === null
+    )
+      return;
     const folderPath = await chooseProjectFolder();
     if (folderPath === null) return;
     const project = await createProject(
       activeServer.id,
-      currentComputer.id,
+      localComputerCredential.current,
       folderPath,
     );
     setProjects((current) => [...current, project]);
@@ -767,9 +815,18 @@ function AuthenticatedApp({
       ),
     );
     setActiveChannel(channel);
+    setActiveProject(null);
     setProjectChannelName("");
     setChannelProject(null);
     projectChannelDialog.close();
+  }
+
+  function openProject(project: ServerProject) {
+    setActiveProject(project);
+    setActiveChannel(null);
+    setMessages([]);
+    setNextBefore(undefined);
+    setNavigationOpen(false);
   }
 
   async function saveChannelAccess() {
@@ -884,7 +941,10 @@ function AuthenticatedApp({
 
   async function revokeSelectedComputer(computer: Computer) {
     await revokeComputer(computer.id);
-    if (currentComputer?.id === computer.id) setCurrentComputer(null);
+    if (currentComputer?.id === computer.id) {
+      setCurrentComputer(null);
+      localComputerCredential.current = null;
+    }
     await reloadComputers();
   }
 
@@ -1072,6 +1132,7 @@ function AuthenticatedApp({
                   aria-current={activeChannel?.id === channel.id}
                   onClick={() => {
                     setActiveChannel(channel);
+                    setActiveProject(null);
                     setNavigationOpen(false);
                   }}
                 >
@@ -1086,19 +1147,26 @@ function AuthenticatedApp({
                 <button
                   type="button"
                   aria-label="Add Project"
-                  disabled={currentComputer === null}
+                  disabled={currentComputer?.status !== "online"}
                   onClick={() => void addProject()}
                 >
                   +
                 </button>
               )}
             </div>
-            <div className="project-list" data-testid="project-list">
+            <div className="project-list">
               {projects.map((project) => (
                 <section className="project-category" key={project.id}>
                   <div className="project-category-heading">
                     <div>
-                      <h4>{project.name}</h4>
+                      <button
+                        className="project-name"
+                        type="button"
+                        aria-label={`Open Project ${project.name}`}
+                        onClick={() => openProject(project)}
+                      >
+                        <h4>{project.name}</h4>
+                      </button>
                       <span
                         className={`project-computer-status ${project.computerStatus}`}
                         data-testid={`project-computer-status-${project.id}`}
@@ -1133,6 +1201,7 @@ function AuthenticatedApp({
                         aria-current={activeChannel?.id === channel.id}
                         onClick={() => {
                           setActiveChannel(channel);
+                          setActiveProject(null);
                           setNavigationOpen(false);
                         }}
                       >
@@ -1169,7 +1238,49 @@ function AuthenticatedApp({
             aria-label="Server Channels"
             data-testid="content-pane"
           >
-            {activeChannel === null ? (
+            {activeProject !== null ? (
+              <>
+                <header className="channel-header">
+                  <button
+                    ref={navigationToggle}
+                    className="navigation-toggle"
+                    type="button"
+                    aria-label="Toggle Channels"
+                    aria-expanded={navigationOpen}
+                    onClick={(event) => toggleNavigation(event.currentTarget)}
+                  >
+                    ☰
+                  </button>
+                  <div>
+                    <h3 data-testid="active-project-name">
+                      {activeProject.name}
+                    </h3>
+                    <p>
+                      {activeProject.computerName} ·{" "}
+                      {activeProject.computerStatus}
+                    </p>
+                  </div>
+                </header>
+                <div className="project-files-panel">
+                  <h4>Project Folder</h4>
+                  <p>{activeProject.folderPath}</p>
+                  {projectFilesError !== "" ? (
+                    <p role="status">{projectFilesError}</p>
+                  ) : (
+                    <ul aria-label="Project files">
+                      {projectFiles.map((entry) => (
+                        <li key={entry.name}>
+                          <span aria-hidden="true">
+                            {entry.kind === "directory" ? "▸" : "·"}
+                          </span>{" "}
+                          {entry.name}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            ) : activeChannel === null ? (
               <>
                 <header className="channel-header">
                   <button

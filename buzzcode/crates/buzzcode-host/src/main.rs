@@ -4,6 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
+    sync::{Semaphore, mpsc},
 };
 use tokio_tungstenite::{
     connect_async,
@@ -22,6 +23,10 @@ use tokio_tungstenite::{
 };
 use tracing_subscriber::EnvFilter;
 use url::Url;
+
+const MAX_CONCURRENT_FOLDER_LISTINGS: usize = 4;
+const MAX_PROJECT_FOLDER_ENTRIES: usize = 1_000;
+const HOST_OUTBOUND_QUEUE_CAPACITY: usize = 64;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,9 +56,23 @@ struct PairRequest<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectRequest<'a> {
+    server_id: &'a str,
+    folder_path: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AgentDescriptor {
     id: &'static str,
     name: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFileEntry {
+    name: String,
+    kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +85,10 @@ enum HostMessage {
         request_id: String,
         path: String,
         name: String,
+    },
+    FolderListed {
+        request_id: String,
+        entries: Vec<ProjectFileEntry>,
     },
     AgentOpened {
         run_id: String,
@@ -88,6 +111,10 @@ enum ServerMessage {
         request_id: String,
         path: String,
     },
+    ListFolder {
+        request_id: String,
+        path: String,
+    },
     OpenAgent {
         run_id: String,
         agent_id: String,
@@ -100,6 +127,40 @@ enum ServerMessage {
     CloseAgent {
         run_id: String,
     },
+}
+
+fn list_project_folder(path: &str) -> anyhow::Result<Vec<ProjectFileEntry>> {
+    let canonical = std::fs::canonicalize(path).with_context(|| format!("cannot access {path}"))?;
+    anyhow::ensure!(canonical.is_dir(), "Project Folder is not a directory");
+    let mut entries = std::fs::read_dir(canonical)
+        .context("cannot list Project Folder")?
+        .take(MAX_PROJECT_FOLDER_ENTRIES + 1)
+        .map(|entry| {
+            let entry = entry.context("cannot read Project entry")?;
+            let kind = if entry
+                .file_type()
+                .context("cannot inspect Project entry")?
+                .is_dir()
+            {
+                "directory"
+            } else {
+                "file"
+            };
+            Ok(ProjectFileEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                kind,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        entries.len() <= MAX_PROJECT_FOLDER_ENTRIES,
+        "Project Folder has too many entries"
+    );
+    entries.sort_by(|left, right| {
+        (left.kind, left.name.to_ascii_lowercase())
+            .cmp(&(right.kind, right.name.to_ascii_lowercase()))
+    });
+    Ok(entries)
 }
 
 #[tokio::main]
@@ -115,13 +176,16 @@ async fn main() -> anyhow::Result<()> {
     };
     match command {
         "pair" => pair(parse_pair_arguments(&arguments[1..])?).await,
+        "project" if arguments.get(1).map(String::as_str) == Some("add") => {
+            add_project(parse_project_arguments(&arguments[2..])?).await
+        }
         "run" => run(parse_run_arguments(&arguments[1..])?).await,
         _ => bail!(usage()),
     }
 }
 
 fn usage() -> &'static str {
-    "usage: buzzcode-host pair --api-origin URL --pairing-code CODE --name NAME --state PATH\n       buzzcode-host run --state PATH"
+    "usage: buzzcode-host pair --api-origin URL --pairing-code CODE --name NAME --state PATH\n       buzzcode-host project add --state PATH --server-id ID --folder PATH\n       buzzcode-host run --state PATH"
 }
 
 fn option(arguments: &[String], name: &str) -> anyhow::Result<String> {
@@ -155,6 +219,20 @@ fn parse_pair_arguments(arguments: &[String]) -> anyhow::Result<PairArguments> {
 struct RunArguments {
     state_path: PathBuf,
     codex_command: String,
+}
+
+struct ProjectArguments {
+    state_path: PathBuf,
+    server_id: String,
+    folder_path: String,
+}
+
+fn parse_project_arguments(arguments: &[String]) -> anyhow::Result<ProjectArguments> {
+    Ok(ProjectArguments {
+        state_path: option(arguments, "--state")?.into(),
+        server_id: option(arguments, "--server-id")?,
+        folder_path: option(arguments, "--folder")?,
+    })
 }
 
 fn parse_run_arguments(arguments: &[String]) -> anyhow::Result<RunArguments> {
@@ -203,6 +281,29 @@ async fn pair(arguments: PairArguments) -> anyhow::Result<()> {
     };
     write_private_state(&arguments.state_path, &state)?;
     println!("paired {}", state.computer_id);
+    Ok(())
+}
+
+async fn add_project(arguments: ProjectArguments) -> anyhow::Result<()> {
+    let contents = std::fs::read(&arguments.state_path)
+        .with_context(|| format!("failed to read {}", arguments.state_path.display()))?;
+    let state: HostState = serde_json::from_slice(&contents).context("Host state is invalid")?;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/host/projects",
+            state.api_origin.trim_end_matches('/')
+        ))
+        .bearer_auth(&state.credential)
+        .json(&ProjectRequest {
+            server_id: &arguments.server_id,
+            folder_path: &arguments.folder_path,
+        })
+        .send()
+        .await
+        .context("Project request failed")?
+        .error_for_status()
+        .context("Project creation was rejected")?;
+    println!("{}", response.text().await?);
     Ok(())
 }
 
@@ -269,13 +370,15 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
     );
     let (socket, _) = connect_async(request).await?;
     let (mut socket_tx, mut socket_rx) = socket.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<HostMessage>();
-    outbound_tx.send(HostMessage::Ready {
-        agents: vec![AgentDescriptor {
-            id: "codex",
-            name: "Codex",
-        }],
-    })?;
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<HostMessage>(HOST_OUTBOUND_QUEUE_CAPACITY);
+    outbound_tx
+        .send(HostMessage::Ready {
+            agents: vec![AgentDescriptor {
+                id: "codex",
+                name: "Codex",
+            }],
+        })
+        .await?;
     let writer = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
             socket_tx
@@ -286,6 +389,7 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
     });
     tracing::info!(computer_id = %state.computer_id, "Host connected");
     let mut agents = HashMap::<String, AgentProcess>::new();
+    let folder_listing_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_FOLDER_LISTINGS));
     let mut connection_end = ConnectionEnd::Disconnected;
     while let Some(message) = socket_rx.next().await {
         match message? {
@@ -299,11 +403,13 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                 let command = match serde_json::from_str::<ServerMessage>(&payload) {
                     Ok(command) => command,
                     Err(error) => {
-                        outbound_tx.send(HostMessage::Error {
-                            request_id: None,
-                            run_id: None,
-                            message: format!("invalid Host command: {error}"),
-                        })?;
+                        outbound_tx
+                            .send(HostMessage::Error {
+                                request_id: None,
+                                run_id: None,
+                                message: format!("invalid Host command: {error}"),
+                            })
+                            .await?;
                         continue;
                     }
                 };
@@ -331,17 +437,58 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                                 Ok((canonical, name))
                             });
                         match result {
-                            Ok((path, name)) => outbound_tx.send(HostMessage::FolderBound {
-                                request_id,
-                                path: path.to_string_lossy().into_owned(),
-                                name,
-                            })?,
-                            Err(error) => outbound_tx.send(HostMessage::Error {
-                                request_id: Some(request_id),
-                                run_id: None,
-                                message: error.to_string(),
-                            })?,
+                            Ok((path, name)) => {
+                                outbound_tx
+                                    .send(HostMessage::FolderBound {
+                                        request_id,
+                                        path: path.to_string_lossy().into_owned(),
+                                        name,
+                                    })
+                                    .await?
+                            }
+                            Err(error) => {
+                                outbound_tx
+                                    .send(HostMessage::Error {
+                                        request_id: Some(request_id),
+                                        run_id: None,
+                                        message: error.to_string(),
+                                    })
+                                    .await?
+                            }
                         }
+                    }
+                    ServerMessage::ListFolder { request_id, path } => {
+                        let Ok(permit) = Arc::clone(&folder_listing_slots).try_acquire_owned()
+                        else {
+                            outbound_tx
+                                .send(HostMessage::Error {
+                                    request_id: Some(request_id),
+                                    run_id: None,
+                                    message: "too many Project Folder listings".to_owned(),
+                                })
+                                .await?;
+                            continue;
+                        };
+                        let outbound_tx = outbound_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
+                            let message = match list_project_folder(&path) {
+                                Ok(entries) => HostMessage::FolderListed {
+                                    request_id,
+                                    entries,
+                                },
+                                Err(error) => HostMessage::Error {
+                                    request_id: Some(request_id),
+                                    run_id: None,
+                                    message: error.to_string(),
+                                },
+                            };
+                            if outbound_tx.blocking_send(message).is_err() {
+                                tracing::debug!(
+                                    "Host disconnected before folder listing completed"
+                                );
+                            }
+                        });
                     }
                     ServerMessage::OpenAgent {
                         run_id,
@@ -350,11 +497,13 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                     } => {
                         tracing::info!(%run_id, %agent_id, %cwd, "opening ACP Agent");
                         if agent_id != "codex" {
-                            outbound_tx.send(HostMessage::Error {
-                                request_id: None,
-                                run_id: Some(run_id),
-                                message: "Agent is not available on this Computer".to_owned(),
-                            })?;
+                            outbound_tx
+                                .send(HostMessage::Error {
+                                    request_id: None,
+                                    run_id: Some(run_id),
+                                    message: "Agent is not available on this Computer".to_owned(),
+                                })
+                                .await?;
                             continue;
                         }
                         let child = Command::new(codex_command)
@@ -366,21 +515,27 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                         let mut child = match child {
                             Ok(child) => child,
                             Err(error) => {
-                                outbound_tx.send(HostMessage::Error {
-                                    request_id: None,
-                                    run_id: Some(run_id),
-                                    message: format!("failed to start {codex_command}: {error}"),
-                                })?;
+                                outbound_tx
+                                    .send(HostMessage::Error {
+                                        request_id: None,
+                                        run_id: Some(run_id),
+                                        message: format!(
+                                            "failed to start {codex_command}: {error}"
+                                        ),
+                                    })
+                                    .await?;
                                 continue;
                             }
                         };
                         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take())
                         else {
-                            outbound_tx.send(HostMessage::Error {
-                                request_id: None,
-                                run_id: Some(run_id),
-                                message: "Agent stdio is unavailable".to_owned(),
-                            })?;
+                            outbound_tx
+                                .send(HostMessage::Error {
+                                    request_id: None,
+                                    run_id: Some(run_id),
+                                    message: "Agent stdio is unavailable".to_owned(),
+                                })
+                                .await?;
                             let _ = child.kill().await;
                             continue;
                         };
@@ -391,32 +546,50 @@ async fn connect(state: &HostState, codex_command: &str) -> anyhow::Result<Conne
                             while let Ok(Some(line)) = lines.next_line().await {
                                 match serde_json::from_str::<Value>(&line) {
                                     Ok(message) => {
-                                        let _ = tx.send(HostMessage::Acp {
-                                            run_id: output_run_id.clone(),
-                                            message,
-                                        });
+                                        if tx
+                                            .send(HostMessage::Acp {
+                                                run_id: output_run_id.clone(),
+                                                message,
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
                                     }
                                     Err(error) => {
-                                        let _ = tx.send(HostMessage::Error {
-                                            request_id: None,
-                                            run_id: Some(output_run_id.clone()),
-                                            message: format!("Agent emitted invalid ACP: {error}"),
-                                        });
+                                        if tx
+                                            .send(HostMessage::Error {
+                                                request_id: None,
+                                                run_id: Some(output_run_id.clone()),
+                                                message: format!(
+                                                    "Agent emitted invalid ACP: {error}"
+                                                ),
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
                                     }
                                 }
                             }
                         });
                         agents.insert(run_id.clone(), AgentProcess { stdin, child });
-                        outbound_tx.send(HostMessage::AgentOpened { run_id })?;
+                        outbound_tx
+                            .send(HostMessage::AgentOpened { run_id })
+                            .await?;
                     }
                     ServerMessage::Acp { run_id, message } => {
                         tracing::debug!(%run_id, ?message, "forwarding ACP message");
                         let Some(agent) = agents.get_mut(&run_id) else {
-                            outbound_tx.send(HostMessage::Error {
-                                request_id: None,
-                                run_id: Some(run_id),
-                                message: "Agent Run is not open".to_owned(),
-                            })?;
+                            outbound_tx
+                                .send(HostMessage::Error {
+                                    request_id: None,
+                                    run_id: Some(run_id),
+                                    message: "Agent Run is not open".to_owned(),
+                                })
+                                .await?;
                             continue;
                         };
                         let mut encoded = serde_json::to_vec(&message)?;

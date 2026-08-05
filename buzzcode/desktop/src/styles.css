@@ -806,6 +806,31 @@ button:disabled {
   color: var(--text);
 }
 
+.project-name {
+  display: block;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+}
+
+.project-files-panel {
+  min-height: 0;
+  padding: 1.5rem;
+  overflow: auto;
+}
+
+.project-files-panel > p {
+  color: var(--muted);
+}
+
+.project-files-panel ul {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0;
+  list-style: none;
+}
+
 .server-workspace .project-channel-list {
   padding: 0;
 }

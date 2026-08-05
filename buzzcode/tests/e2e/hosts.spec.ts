@@ -21,6 +21,18 @@ async function stopHost(host: ChildProcess): Promise<void> {
   await exited;
 }
 
+async function runCommand(
+  command: string,
+  arguments_: string[],
+): Promise<number | null> {
+  const child = spawn(command, arguments_, { stdio: "ignore" });
+  return new Promise((resolveExit) => child.once("exit", resolveExit));
+}
+
+async function runHostCommand(arguments_: string[]): Promise<number | null> {
+  return runCommand(hostBinary, arguments_);
+}
+
 test.beforeAll(async () => {
   await harness.start();
 });
@@ -89,6 +101,7 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
   const secondFolder = join(directory, "second-vps-project");
   await mkdir(firstFolder);
   await mkdir(secondFolder);
+  expect(await runCommand("git", ["init", "--quiet", firstFolder])).toBe(0);
   const statePath = join(directory, "host.json");
   await writeFile(
     statePath,
@@ -129,41 +142,35 @@ test("pairs a VPS as a user Computer without binding it to one Server", async ({
       page.getByTestId(`computer-${pairing.paired.computerId}`),
     ).toContainText("Shared VPSOnline");
 
-    const crossServerProjects = await page.evaluate(
-      async ({ computerId, folderPaths, origin }) => {
-        const createServer = async (name: string) => {
-          const response = await fetch(`${origin}/api/servers`, {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ name }),
-          });
-          return response.json();
-        };
-        const first = await createServer("VPS Project Server One");
-        const second = await createServer("VPS Project Server Two");
-        const createProject = async (serverId: string, folderPath: string) =>
-          fetch(`${origin}/api/servers/${serverId}/projects`, {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              computerId,
-              folderPath,
-            }),
-          });
-        return [
-          (await createProject(first.id, folderPaths[0])).status,
-          (await createProject(second.id, folderPaths[1])).status,
-        ];
-      },
-      {
-        computerId: pairing.paired.computerId,
-        folderPaths: [firstFolder, secondFolder],
-        origin: harness.apiOrigin,
-      },
+    const projectServers = await page.evaluate(async (origin) => {
+      const createServer = async (name: string) => {
+        const response = await fetch(`${origin}/api/servers`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        return response.json();
+      };
+      const first = await createServer("VPS Project Server One");
+      const second = await createServer("VPS Project Server Two");
+      return [first.id, second.id];
+    }, harness.apiOrigin);
+    const projectExitCodes = await Promise.all(
+      projectServers.map((serverId: string, index: number) =>
+        runHostCommand([
+          "project",
+          "add",
+          "--state",
+          statePath,
+          "--server-id",
+          serverId,
+          "--folder",
+          [firstFolder, secondFolder][index],
+        ]),
+      ),
     );
-    expect(crossServerProjects).toEqual([201, 201]);
+    expect(projectExitCodes).toEqual([0, 0]);
 
     await stopHost(host);
     await expect.poll(computerStatus).toBe("reconnecting");
