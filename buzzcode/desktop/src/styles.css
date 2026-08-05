@@ -409,6 +409,35 @@ button:disabled {
   background: transparent;
 }
 
+.direct-messages {
+  margin-top: 1rem;
+}
+
+.direct-messages > .composer {
+  grid-template-columns: auto minmax(12rem, 1fr) auto;
+}
+
+.dm-layout {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  min-height: 24rem;
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid #2e4162;
+  border-radius: 0.75rem;
+}
+
+.dm-layout > nav {
+  padding: 0.75rem;
+  border-right: 1px solid #2e4162;
+}
+
+.dm-layout .channel-panel > h3 {
+  padding: 1rem 1.25rem;
+  margin: 0;
+  border-bottom: 1px solid #2e4162;
+}
+
 @media (max-width: 48rem) {
   .shell {
     padding: 0;
@@ -422,6 +451,15 @@ button:disabled {
 
   .chat-layout {
     grid-template-columns: 1fr;
+  }
+
+  .dm-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dm-layout > nav {
+    border-right: 0;
+    border-bottom: 1px solid #2e4162;
   }
 
   .channel-sidebar {

@@ -34,6 +34,7 @@ import {
   updateMemberRole,
   writeDurableState,
 } from "./api";
+import { DirectMessagesPanel } from "./DirectMessagesPanel";
 import "./styles.css";
 
 function ChannelMemberPicker({
@@ -489,6 +490,7 @@ function AuthenticatedApp({
           </div>
           {joinServerForm}
         </section>
+        <DirectMessagesPanel session={session} />
       </main>
     );
   }
@@ -937,6 +939,7 @@ function AuthenticatedApp({
           </button>
         )}
       </section>
+      <DirectMessagesPanel session={session} />
     </main>
   );
 }

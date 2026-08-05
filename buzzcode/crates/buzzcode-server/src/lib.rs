@@ -26,6 +26,8 @@ use tower_http::{
 };
 use url::Url;
 
+mod direct_messages;
+
 const SESSION_COOKIE: &str = "buzzcode_session";
 
 /// OIDC and browser settings required by the Buzzcode server.
@@ -72,9 +74,10 @@ impl AuthConfig {
 }
 
 #[derive(Clone)]
-struct AppState {
-    pool: PgPool,
+pub(crate) struct AppState {
+    pub(crate) pool: PgPool,
     changes: broadcast::Sender<ServerEvent>,
+    pub(crate) direct_message_changes: broadcast::Sender<direct_messages::DirectMessageEvent>,
     oidc: CoreClient<
         EndpointSet,
         EndpointNotSet,
@@ -84,7 +87,7 @@ struct AppState {
         EndpointMaybeSet,
     >,
     http: reqwest::Client,
-    auth: AuthConfig,
+    pub(crate) auth: AuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -295,13 +298,13 @@ struct CreateMessage {
 }
 
 #[derive(Debug, Deserialize)]
-struct EditMessage {
-    content: String,
+pub(crate) struct EditMessage {
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ReactionInput {
-    emoji: String,
+pub(crate) struct ReactionInput {
+    pub(crate) emoji: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,16 +316,16 @@ struct MessagePageQuery {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ReplyTarget {
-    id: String,
-    content: Option<String>,
-    author_display_name: String,
-    deleted: bool,
+pub(crate) struct ReplyTarget {
+    pub(crate) id: String,
+    pub(crate) content: Option<String>,
+    pub(crate) author_display_name: String,
+    pub(crate) deleted: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ReactionSummary {
+pub(crate) struct ReactionSummary {
     emoji: String,
     count: i64,
     reacted: bool,
@@ -352,7 +355,7 @@ struct MessagePage {
 }
 
 #[derive(Debug, Error)]
-enum ApiError {
+pub(crate) enum ApiError {
     #[error("authentication is required")]
     Unauthorized,
     #[error("the authentication response is invalid or has expired")]
@@ -453,9 +456,11 @@ pub async fn serve(
     let app_origin = HeaderValue::from_str(&auth.app_origin)
         .map_err(|error| ServerError::Configuration(error.to_string()))?;
     let (changes, _) = broadcast::channel(64);
+    let (direct_message_changes, _) = broadcast::channel(64);
     let state = Arc::new(AppState {
         pool,
         changes,
+        direct_message_changes,
         oidc,
         http,
         auth,
@@ -518,6 +523,7 @@ pub async fn serve(
             get(read_state).put(write_state),
         )
         .route("/api/servers/{server_id}/events", get(events))
+        .merge(direct_messages::routes())
         .layer(
             CorsLayer::new()
                 .allow_origin(app_origin)
@@ -823,7 +829,7 @@ fn clear_session_cookie(secure: bool) -> String {
     )
 }
 
-fn require_origin(auth: &AuthConfig, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn require_origin(auth: &AuthConfig, headers: &HeaderMap) -> Result<(), ApiError> {
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
@@ -834,7 +840,10 @@ fn require_origin(auth: &AuthConfig, headers: &HeaderMap) -> Result<(), ApiError
     Ok(())
 }
 
-async fn require_session(pool: &PgPool, headers: &HeaderMap) -> Result<String, ApiError> {
+pub(crate) async fn require_session(
+    pool: &PgPool,
+    headers: &HeaderMap,
+) -> Result<String, ApiError> {
     let token = cookie_value(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
     let subject = sqlx::query_scalar::<_, String>(
         "SELECT oidc_subject FROM sessions WHERE token_hash = $1 AND expires_at > NOW()",

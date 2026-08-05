@@ -71,6 +71,45 @@ export type MessagePage = Readonly<{
   nextBefore?: number;
 }>;
 
+export type DirectMessage = Readonly<{
+  id: string;
+  peerSubject: string;
+  peerEmail: string;
+  peerDisplayName: string;
+}>;
+
+export type DirectMessageMessage = Readonly<{
+  id: string;
+  sequence: number;
+  directMessageId: string;
+  content?: string;
+  authorSubject: string;
+  authorDisplayName: string;
+  createdAt: string;
+  editedAt?: string;
+  deletedAt?: string;
+  replyTo?: ChannelMessage["replyTo"];
+  reactions: ChannelMessage["reactions"];
+}>;
+
+export type DirectMessagePage = Readonly<{
+  messages: readonly DirectMessageMessage[];
+  nextBefore?: number;
+}>;
+
+export type DirectMessageEvent =
+  | Readonly<{ type: "directMessageChanged"; directMessageId: string }>
+  | Readonly<{
+      type: "messageCreated";
+      directMessageId: string;
+      message: DirectMessageMessage;
+    }>
+  | Readonly<{
+      type: "messageChanged";
+      directMessageId: string;
+      messageId: string;
+    }>;
+
 export type ServerMember = Readonly<{
   subject: string;
   email: string;
@@ -249,6 +288,66 @@ function parseChannelMessage(value: unknown): ChannelMessage {
       };
     }),
   };
+}
+
+function parseDirectMessage(value: unknown): DirectMessage {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.peerSubject !== "string" ||
+    typeof value.peerEmail !== "string" ||
+    typeof value.peerDisplayName !== "string"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Direct Message");
+  }
+  return {
+    id: value.id,
+    peerSubject: value.peerSubject,
+    peerEmail: value.peerEmail,
+    peerDisplayName: value.peerDisplayName,
+  };
+}
+
+function parseDirectMessageMessage(value: unknown): DirectMessageMessage {
+  if (!isRecord(value) || typeof value.directMessageId !== "string") {
+    throw new Error("Buzzcode API returned an invalid Direct Message message");
+  }
+  const channelShape = parseChannelMessage({
+    ...value,
+    channelId: value.directMessageId,
+  });
+  const { channelId: _channelId, ...message } = channelShape;
+  return { ...message, directMessageId: value.directMessageId };
+}
+
+function parseDirectMessageEvent(value: unknown): DirectMessageEvent {
+  if (
+    !isRecord(value) ||
+    typeof value.directMessageId !== "string" ||
+    !["directMessageChanged", "messageCreated", "messageChanged"].includes(
+      String(value.type),
+    )
+  ) {
+    throw new Error("Buzzcode API returned an invalid Direct Message event");
+  }
+  if (value.type === "directMessageChanged") {
+    return { type: value.type, directMessageId: value.directMessageId };
+  }
+  if (value.type === "messageCreated" && isRecord(value.message)) {
+    return {
+      type: value.type,
+      directMessageId: value.directMessageId,
+      message: parseDirectMessageMessage(value.message),
+    };
+  }
+  if (value.type === "messageChanged" && typeof value.messageId === "string") {
+    return {
+      type: value.type,
+      directMessageId: value.directMessageId,
+      messageId: value.messageId,
+    };
+  }
+  throw new Error("Buzzcode API returned an invalid Direct Message event");
 }
 
 function parseMember(value: unknown): ServerMember {
@@ -562,6 +661,151 @@ export async function setMessageReaction(
   );
 }
 
+export async function listDirectMessages(): Promise<readonly DirectMessage[]> {
+  const response = await fetch(`${apiOrigin}/api/direct-messages`, {
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!Array.isArray(value)) {
+    throw new Error("Buzzcode API returned an invalid Direct Message list");
+  }
+  return value.map(parseDirectMessage);
+}
+
+export async function startDirectMessage(
+  currentEmail: string,
+  peerEmail: string,
+): Promise<DirectMessage> {
+  return parseResponse(
+    await fetch(`${apiOrigin}/api/direct-messages`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ participantEmails: [currentEmail, peerEmail] }),
+    }),
+    parseDirectMessage,
+  );
+}
+
+function directMessageMessagesUrl(directMessageId: string): string {
+  return `${apiOrigin}/api/direct-messages/${encodeURIComponent(directMessageId)}/messages`;
+}
+
+export async function listDirectMessageMessages(
+  directMessageId: string,
+  before?: number,
+): Promise<DirectMessagePage> {
+  const query =
+    before === undefined ? "" : `?before=${encodeURIComponent(before)}`;
+  const response = await fetch(
+    `${directMessageMessagesUrl(directMessageId)}${query}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) throw new Error(`Buzzcode API returned ${response.status}`);
+  const value: unknown = await response.json();
+  if (!isRecord(value) || !Array.isArray(value.messages)) {
+    throw new Error("Buzzcode API returned an invalid Direct Message page");
+  }
+  if (
+    value.nextBefore !== undefined &&
+    value.nextBefore !== null &&
+    typeof value.nextBefore !== "number"
+  ) {
+    throw new Error("Buzzcode API returned an invalid Direct Message cursor");
+  }
+  return {
+    messages: value.messages.map(parseDirectMessageMessage),
+    ...(typeof value.nextBefore === "number"
+      ? { nextBefore: value.nextBefore }
+      : {}),
+  };
+}
+
+export async function createDirectMessageMessage(
+  directMessageId: string,
+  content: string,
+  replyToMessageId?: string,
+): Promise<DirectMessageMessage> {
+  return parseResponse(
+    await fetch(directMessageMessagesUrl(directMessageId), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content, replyToMessageId }),
+    }),
+    parseDirectMessageMessage,
+  );
+}
+
+async function mutateDirectMessageMessage(
+  directMessageId: string,
+  messageId: string,
+  method: "GET" | "PATCH" | "DELETE",
+  body?: Readonly<Record<string, unknown>>,
+): Promise<DirectMessageMessage> {
+  return parseResponse(
+    await fetch(
+      `${directMessageMessagesUrl(directMessageId)}/${encodeURIComponent(messageId)}`,
+      {
+        method,
+        credentials: "include",
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            }),
+      },
+    ),
+    parseDirectMessageMessage,
+  );
+}
+
+export function getDirectMessageMessage(
+  directMessageId: string,
+  messageId: string,
+): Promise<DirectMessageMessage> {
+  return mutateDirectMessageMessage(directMessageId, messageId, "GET");
+}
+
+export function editDirectMessageMessage(
+  directMessageId: string,
+  messageId: string,
+  content: string,
+): Promise<DirectMessageMessage> {
+  return mutateDirectMessageMessage(directMessageId, messageId, "PATCH", {
+    content,
+  });
+}
+
+export function deleteDirectMessageMessage(
+  directMessageId: string,
+  messageId: string,
+): Promise<DirectMessageMessage> {
+  return mutateDirectMessageMessage(directMessageId, messageId, "DELETE");
+}
+
+export async function setDirectMessageReaction(
+  directMessageId: string,
+  messageId: string,
+  emoji: string,
+  reacted: boolean,
+): Promise<DirectMessageMessage> {
+  return parseResponse(
+    await fetch(
+      `${directMessageMessagesUrl(directMessageId)}/${encodeURIComponent(messageId)}/reactions`,
+      {
+        method: reacted ? "POST" : "DELETE",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ emoji }),
+      },
+    ),
+    parseDirectMessageMessage,
+  );
+}
+
 export async function createInvitation(
   serverId: string,
   email: string,
@@ -760,6 +1004,32 @@ export function subscribeToServerEvents(
         JSON.parse(String(message.data)) as unknown,
       );
       onEvent(event);
+    });
+  };
+  connect();
+  return () => {
+    stopped = true;
+    if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+    websocket?.close();
+  };
+}
+
+export function subscribeToDirectMessageEvents(
+  onEvent: (event: DirectMessageEvent) => void,
+  onConnectionChange: (connected: boolean) => void,
+): () => void {
+  let stopped = false;
+  let websocket: WebSocket | undefined;
+  let reconnectTimer: number | undefined;
+  const connect = () => {
+    websocket = new WebSocket(`${websocketOrigin}/api/direct-messages/events`);
+    websocket.addEventListener("open", () => onConnectionChange(true));
+    websocket.addEventListener("close", () => {
+      onConnectionChange(false);
+      if (!stopped) reconnectTimer = window.setTimeout(connect, 500);
+    });
+    websocket.addEventListener("message", (message) => {
+      onEvent(parseDirectMessageEvent(JSON.parse(String(message.data))));
     });
   };
   connect();
