@@ -13,6 +13,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use openidconnect::CsrfToken;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use tokio::{
     sync::{broadcast, mpsc},
     time::{Duration, timeout},
@@ -51,6 +52,63 @@ pub(crate) struct AgentDescriptor {
 pub(crate) struct ProjectFileEntry {
     pub(crate) name: String,
     pub(crate) kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthenticatedComputer {
+    pub(crate) id: String,
+    pub(crate) owner_subject: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HostProjectError {
+    #[error("the Host request is invalid")]
+    InvalidRequest,
+    #[error("the Computer cannot currently handle the request")]
+    Conflict,
+    #[error("database operation failed")]
+    Database(#[from] sqlx::Error),
+}
+
+pub(crate) async fn authenticate_owned_computer(
+    pool: &PgPool,
+    subject: &str,
+    credential: &str,
+) -> Result<AuthenticatedComputer, ApiError> {
+    sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, owner_subject, name FROM computers \
+         WHERE owner_subject = $1 AND credential_hash = $2 AND revoked_at IS NULL",
+    )
+    .bind(subject)
+    .bind(token_hash(credential))
+    .fetch_optional(pool)
+    .await?
+    .map(|(id, owner_subject, name)| AuthenticatedComputer {
+        id,
+        owner_subject,
+        name,
+    })
+    .ok_or(ApiError::Forbidden)
+}
+
+pub(crate) async fn authenticate_host_computer(
+    pool: &PgPool,
+    credential: &str,
+) -> Result<AuthenticatedComputer, ApiError> {
+    sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, owner_subject, name FROM computers \
+         WHERE credential_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(token_hash(credential))
+    .fetch_optional(pool)
+    .await?
+    .map(|(id, owner_subject, name)| AuthenticatedComputer {
+        id,
+        owner_subject,
+        name,
+    })
+    .ok_or(ApiError::Unauthorized)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -490,7 +548,10 @@ async fn connect_host(
     }))
 }
 
-async fn connected_host(state: &AppState, computer_id: &str) -> Result<HostPresence, ApiError> {
+async fn connected_host(
+    state: &AppState,
+    computer_id: &str,
+) -> Result<HostPresence, HostProjectError> {
     state
         .host_presence
         .read()
@@ -498,14 +559,14 @@ async fn connected_host(state: &AppState, computer_id: &str) -> Result<HostPrese
         .get(computer_id)
         .filter(|host| host.status == HostStatus::Online)
         .cloned()
-        .ok_or(ApiError::Conflict)
+        .ok_or(HostProjectError::Conflict)
 }
 
 pub(crate) async fn bind_project_folder(
     state: &AppState,
     computer_id: &str,
     path: &str,
-) -> Result<(String, String), ApiError> {
+) -> Result<(String, String), HostProjectError> {
     let host = connected_host(state, computer_id).await?;
     let request_id = CsrfToken::new_random().secret().to_owned();
     let mut inbound = host.inbound.subscribe();
@@ -514,7 +575,7 @@ pub(crate) async fn bind_project_folder(
             request_id: request_id.clone(),
             path: path.to_owned(),
         })
-        .map_err(|_| ApiError::Conflict)?;
+        .map_err(|_| HostProjectError::Conflict)?;
     timeout(Duration::from_secs(10), async move {
         loop {
             match inbound.recv().await {
@@ -526,21 +587,21 @@ pub(crate) async fn bind_project_folder(
                 Ok(ClientHostMessage::Error {
                     request_id: Some(response_id),
                     ..
-                }) if response_id == request_id => return Err(ApiError::InvalidRequest),
+                }) if response_id == request_id => return Err(HostProjectError::InvalidRequest),
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return Err(ApiError::Conflict),
+                Err(broadcast::error::RecvError::Closed) => return Err(HostProjectError::Conflict),
             }
         }
     })
     .await
-    .map_err(|_| ApiError::Conflict)?
+    .map_err(|_| HostProjectError::Conflict)?
 }
 
 pub(crate) async fn list_project_folder(
     state: &AppState,
     computer_id: &str,
     path: &str,
-) -> Result<Vec<ProjectFileEntry>, ApiError> {
+) -> Result<Vec<ProjectFileEntry>, HostProjectError> {
     let host = connected_host(state, computer_id).await?;
     let request_id = CsrfToken::new_random().secret().to_owned();
     let mut inbound = host.inbound.subscribe();
@@ -549,7 +610,7 @@ pub(crate) async fn list_project_folder(
             request_id: request_id.clone(),
             path: path.to_owned(),
         })
-        .map_err(|_| ApiError::Conflict)?;
+        .map_err(|_| HostProjectError::Conflict)?;
     timeout(Duration::from_secs(10), async move {
         loop {
             match inbound.recv().await {
@@ -560,14 +621,14 @@ pub(crate) async fn list_project_folder(
                 Ok(ClientHostMessage::Error {
                     request_id: Some(response_id),
                     ..
-                }) if response_id == request_id => return Err(ApiError::InvalidRequest),
+                }) if response_id == request_id => return Err(HostProjectError::InvalidRequest),
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return Err(ApiError::Conflict),
+                Err(broadcast::error::RecvError::Closed) => return Err(HostProjectError::Conflict),
             }
         }
     })
     .await
-    .map_err(|_| ApiError::Conflict)?
+    .map_err(|_| HostProjectError::Conflict)?
 }
 
 async fn wait_for_run_message(
@@ -791,7 +852,7 @@ pub(crate) async fn computer_status(state: &AppState, computer_id: &str) -> &'st
 pub(crate) async fn computer_recently_seen(
     state: &AppState,
     computer_id: &str,
-) -> Result<bool, ApiError> {
+) -> Result<bool, HostProjectError> {
     let recent = sqlx::query_scalar::<_, bool>(
         "SELECT revoked_at IS NULL \
                 AND last_seen_at > NOW() - ($2 * INTERVAL '1 millisecond') \
