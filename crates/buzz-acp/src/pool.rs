@@ -87,6 +87,10 @@ pub struct AgentModelCapabilities {
 pub struct SessionState {
     /// channel_id → session_id
     pub sessions: HashMap<Uuid, String>,
+    /// Last Project Agent Task root bound to each channel session. Switching
+    /// tasks rotates the ACP session so one task never inherits another task's
+    /// private working context.
+    pub project_task_roots: HashMap<Uuid, String>,
     pub heartbeat_session: Option<String>,
     /// Per-channel turn counters for proactive session rotation.
     /// Incremented on each successful prompt; reset when the session is rotated.
@@ -125,6 +129,7 @@ impl SessionState {
         self.turn_counts.remove(channel_id);
         self.core_sections.remove(channel_id);
         self.canvas_sections.remove(channel_id);
+        self.project_task_roots.remove(channel_id);
         self.sessions.remove(channel_id).is_some()
     }
 
@@ -136,6 +141,7 @@ impl SessionState {
         self.heartbeat_turn_count = 0;
         self.core_sections.clear();
         self.canvas_sections.clear();
+        self.project_task_roots.clear();
     }
 
     #[cfg(test)]
@@ -144,6 +150,7 @@ impl SessionState {
             || self.turn_counts.contains_key(channel_id)
             || self.core_sections.contains_key(channel_id)
             || self.canvas_sections.contains_key(channel_id)
+            || self.project_task_roots.contains_key(channel_id)
     }
 }
 
@@ -522,6 +529,8 @@ pub struct PromptContext {
     /// (`include_str!`) is inherently `'static`.
     pub base_prompt: Option<&'static str>,
     pub cwd: String,
+    /// Stable identity of the computer hosting this ACP process.
+    pub computer_id: Option<String>,
     /// REST client for pre-prompt context fetches (thread/DM history).
     pub rest_client: RestClient,
     /// Shared channel metadata for startup-known and dynamically joined channels.
@@ -872,10 +881,12 @@ async fn resolve_new_session_channel_context(
 async fn create_session_and_apply_model(
     agent: &mut OwnedAgent,
     ctx: &PromptContext,
+    cwd_override: Option<&str>,
     agent_core: Option<&str>,
     agent_canvas: Option<&str>,
     channel_name: Option<&str>,
 ) -> Result<String, AcpError> {
+    let cwd = cwd_override.unwrap_or(&ctx.cwd);
     // Build base_prompt + system_prompt + agent core + canvas metadata into a
     // single prompt. Standard protocol-v2 agents receive it in `session/new`;
     // Goose receives it through the custom request below. Legacy agents receive
@@ -886,7 +897,7 @@ async fn create_session_and_apply_model(
     let combined_system_prompt = with_canvas(
         with_core(
             with_team(
-                framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+                framed_system_prompt(cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
                 ctx.team_instructions.as_deref(),
             ),
             agent_core,
@@ -902,7 +913,7 @@ async fn create_session_and_apply_model(
     let resp = agent
         .acp
         .session_new_full(
-            &ctx.cwd,
+            cwd,
             ctx.mcp_servers.clone(),
             session_new_system_prompt(
                 is_goose,
@@ -1337,6 +1348,45 @@ fn send_prompt_result(
 ///
 /// The agent is ALWAYS returned — even on panic the `JoinSet` detects the
 /// abort and the caller uses `task_map` to recover the agent index.
+struct PromptProjectTask {
+    task_id: String,
+    project_address: String,
+    workspace: Option<String>,
+    computer_id: Option<String>,
+    computer_access: Option<String>,
+    project_owner: Option<String>,
+    requester: String,
+    enforce_host: bool,
+}
+
+fn prompt_event_tag(event: &nostr::Event, name: &str) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        (tag.kind().to_string() == name)
+            .then(|| tag.content().map(str::to_string))
+            .flatten()
+    })
+}
+
+fn validate_prompt_project_task(
+    task: &PromptProjectTask,
+    computer_id: Option<&str>,
+    agent_owner: Option<&str>,
+) -> Result<(), &'static str> {
+    if !task.enforce_host {
+        return Ok(());
+    }
+    if task.computer_id.is_none() || task.computer_id.as_deref() != computer_id {
+        return Err("project task targets a different computer");
+    }
+    if task.computer_access.as_deref() == Some("personal")
+        && (task.project_owner.as_deref() != Some(task.requester.as_str())
+            || task.project_owner.as_deref() != agent_owner)
+    {
+        return Err("project task requester does not own this personal computer");
+    }
+    Ok(())
+}
+
 pub async fn run_prompt_task(
     mut agent: OwnedAgent,
     batch: Option<FlushBatch>,
@@ -1366,6 +1416,46 @@ pub async fn run_prompt_task(
         .as_ref()
         .map(|b| b.events.iter().map(|be| be.event.id.to_hex()).collect())
         .unwrap_or_default();
+    let project_task_context = batch.as_ref().and_then(|batch| {
+        let request = batch.events.iter().find(|item| {
+            item.event.kind == nostr::Kind::Custom(buzz_core::kind::KIND_JOB_REQUEST as u16)
+        })?;
+        let task_id = crate::queue::parse_thread_tags(&request.event)
+            .root_event_id
+            .unwrap_or_else(|| request.event.id.to_hex());
+        let project_address = request
+            .event
+            .tags
+            .iter()
+            .find(|tag| tag.kind().to_string() == "a")?
+            .content()?
+            .to_string();
+        let workspace = request
+            .event
+            .tags
+            .iter()
+            .find(|tag| tag.kind().to_string() == "workspace")
+            .and_then(|tag| tag.content())
+            .filter(|path| std::path::Path::new(path).is_absolute())
+            .map(str::to_string);
+        Some(PromptProjectTask {
+            enforce_host: project_address.starts_with("30623:"),
+            task_id,
+            project_address,
+            workspace,
+            computer_id: prompt_event_tag(&request.event, "computer-id"),
+            computer_access: prompt_event_tag(&request.event, "computer-access"),
+            project_owner: prompt_event_tag(&request.event, "project-owner"),
+            requester: request.event.pubkey.to_hex(),
+        })
+    });
+    let project_task = project_task_context.as_ref().map(|task| {
+        serde_json::json!({
+            "taskId": task.task_id,
+            "projectAddress": task.project_address,
+            "workspace": task.workspace,
+        })
+    });
     agent.acp.observe(
         "turn_started",
         serde_json::json!({
@@ -1374,6 +1464,7 @@ pub async fn run_prompt_task(
                 PromptSource::Heartbeat => "heartbeat",
             },
             "triggeringEventIds": triggering_event_ids,
+            "projectTask": project_task,
         }),
     );
 
@@ -1424,6 +1515,42 @@ pub async fn run_prompt_task(
         .map(|b| b.events.iter().map(|be| be.event.id.to_hex()).collect())
         .unwrap_or_default();
     let _reaction_guard = ReactionGuard::new(ctx.rest_client.clone(), reaction_ids.clone());
+
+    if let Some(task) = project_task_context.as_ref() {
+        let configured_owner = ctx.agent_owner_pubkey.as_ref().map(|owner| owner.to_hex());
+        if let Err(message) = validate_prompt_project_task(
+            task,
+            ctx.computer_id.as_deref(),
+            configured_owner.as_deref(),
+        ) {
+            send_prompt_result(
+                &result_tx,
+                &turn_id,
+                agent,
+                source,
+                PromptOutcome::Error(AcpError::Protocol(message.to_string())),
+                None,
+            );
+            return;
+        }
+    }
+
+    if let (PromptSource::Channel(channel_id), Some(task)) =
+        (&source, project_task_context.as_ref())
+    {
+        let is_same_task = agent
+            .state
+            .project_task_roots
+            .get(channel_id)
+            .is_some_and(|current| current == &task.task_id);
+        if !is_same_task {
+            agent.state.invalidate_channel(channel_id);
+            agent
+                .state
+                .project_task_roots
+                .insert(*channel_id, task.task_id.clone());
+        }
+    }
 
     //
     // Core memory is delivered inside the system prompt the harness already
@@ -1554,6 +1681,9 @@ pub async fn run_prompt_task(
                 match create_session_and_apply_model(
                     &mut agent,
                     &ctx,
+                    project_task_context
+                        .as_ref()
+                        .and_then(|task| task.workspace.as_deref()),
                     agent_core.as_deref(),
                     agent_canvas.as_deref(),
                     title_channel.as_deref(),
@@ -1604,7 +1734,8 @@ pub async fn run_prompt_task(
             if let Some(sid) = &agent.state.heartbeat_session {
                 (sid.clone(), false)
             } else {
-                match create_session_and_apply_model(&mut agent, &ctx, None, None, None).await {
+                match create_session_and_apply_model(&mut agent, &ctx, None, None, None, None).await
+                {
                     Ok(sid) => {
                         tracing::info!(
                             target: "pool::session",
@@ -6253,6 +6384,31 @@ mod tests {
         make_prompt_context_impl(&agent_keys, None)
     }
 
+    #[test]
+    fn project_task_host_gate_requires_matching_computer_and_personal_owner() {
+        let owner = "1".repeat(64);
+        let mut task = PromptProjectTask {
+            task_id: "task".into(),
+            project_address: "30623:owner:project".into(),
+            workspace: Some("/srv/project".into()),
+            computer_id: Some("computer-a".into()),
+            computer_access: Some("personal".into()),
+            project_owner: Some(owner.clone()),
+            requester: owner.clone(),
+            enforce_host: true,
+        };
+        assert!(validate_prompt_project_task(&task, Some("computer-a"), Some(&owner)).is_ok());
+        assert_eq!(
+            validate_prompt_project_task(&task, Some("computer-b"), Some(&owner)),
+            Err("project task targets a different computer")
+        );
+        task.requester = "2".repeat(64);
+        assert_eq!(
+            validate_prompt_project_task(&task, Some("computer-a"), Some(&owner)),
+            Err("project task requester does not own this personal computer")
+        );
+    }
+
     fn make_prompt_context_with_owner(
         agent_keys: &nostr::Keys,
         owner_pubkey: nostr::PublicKey,
@@ -6278,6 +6434,7 @@ mod tests {
             heartbeat_prompt: None,
             base_prompt: None,
             cwd: ".".to_string(),
+            computer_id: None,
             rest_client: RestClient {
                 http: reqwest::Client::new(),
                 base_url: "http://127.0.0.1:0".to_string(),

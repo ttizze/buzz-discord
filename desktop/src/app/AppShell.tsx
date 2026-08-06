@@ -108,7 +108,7 @@ export function AppShell() {
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
   const communitiesHook = useCommunities();
-  const hasCommunityRail = communitiesHook.communities.length > 1;
+  const hasCommunityRail = communitiesHook.communities.length > 0;
   const addCommunityDialog = useAddCommunityDialogState();
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
@@ -128,6 +128,7 @@ export function AppShell() {
     goChannel,
     goHome,
     goNewMessage,
+    goProject,
     goProjects,
     goPulse,
     goSettings,
@@ -137,10 +138,8 @@ export function AppShell() {
   } = useAppNavigation();
   const { canGoBack, canGoForward, goBack, goForward } =
     useBackForwardControls();
-  const { selectedChannelId, selectedView } = React.useMemo(
-    () => deriveShellRoute(location.pathname),
-    [location.pathname],
-  );
+  const { selectedChannelId, selectedProjectId, selectedView } =
+    deriveShellRoute(location.pathname);
   const {
     removeCommunity: handleRemoveCommunity,
     switchCommunity: handleSwitchCommunity,
@@ -160,7 +159,6 @@ export function AppShell() {
     ? locationSearchSection
     : DEFAULT_SETTINGS_SECTION;
   const startupReady = useDeferredStartup();
-
   const identityQuery = useIdentityQuery();
   const { mutedChannelIds, muteChannel, unmuteChannel } = useChannelMutes(
     identityQuery.data?.pubkey,
@@ -884,6 +882,7 @@ export function AppShell() {
                           searchChannels={channels}
                           searchFocusRequest={searchFocusRequest}
                           onSelectHome={() => void goHome()}
+                          onSelectProject={goProject}
                           onSelectProjects={() => void goProjects()}
                           onSelectPulse={() => void goPulse()}
                           onSelectSettings={handleOpenSettings}
@@ -909,6 +908,7 @@ export function AppShell() {
                               : undefined
                           }
                           selectedChannelId={selectedChannelId}
+                          selectedProjectId={selectedProjectId}
                           selectedView={selectedView}
                           unreadChannelIds={unreadChannelIds}
                           unreadChannelCounts={unreadChannelCounts}

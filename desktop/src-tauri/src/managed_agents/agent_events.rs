@@ -37,6 +37,9 @@ use super::{ManagedAgentRecord, RespondTo};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedAgentEventContent {
     pub name: String,
+    /// Stable identifier of the computer that hosts this managed agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +70,10 @@ pub struct ManagedAgentEventContent {
 /// re-publish when only excluded runtime/local fields changed, so an
 /// operational start/stop produces an identical projection and never
 /// republishes.
-pub fn agent_event_content(record: &ManagedAgentRecord) -> ManagedAgentEventContent {
+pub fn agent_event_content(
+    record: &ManagedAgentRecord,
+    computer_id: Option<&str>,
+) -> ManagedAgentEventContent {
     // Slimmed projection (NIP-AP "Slimming: kind:30177"): definition-linked
     // instances resolve prompt/model/provider/source_version through their
     // kind:30175 definition, so those fields are omitted from the wire.
@@ -79,6 +85,9 @@ pub fn agent_event_content(record: &ManagedAgentRecord) -> ManagedAgentEventCont
     let definition_linked = record.persona_id.is_some();
     ManagedAgentEventContent {
         name: record.name.clone(),
+        computer_id: matches!(record.backend, super::BackendKind::Local)
+            .then(|| computer_id.map(str::to_string))
+            .flatten(),
         persona_id: record.persona_id.clone(),
         system_prompt: if definition_linked {
             None
@@ -110,8 +119,11 @@ pub fn agent_event_content(record: &ManagedAgentRecord) -> ManagedAgentEventCont
 ///
 /// Returns an unsigned `EventBuilder` — the caller signs and submits. The
 /// `d_tag` is the agent's pubkey.
-pub fn build_agent_event(record: &ManagedAgentRecord) -> Result<EventBuilder, String> {
-    let content = serde_json::to_string(&agent_event_content(record))
+pub fn build_agent_event(
+    record: &ManagedAgentRecord,
+    computer_id: Option<&str>,
+) -> Result<EventBuilder, String> {
+    let content = serde_json::to_string(&agent_event_content(record, computer_id))
         .map_err(|e| format!("failed to serialize managed-agent content: {e}"))?;
     let tags =
         vec![Tag::parse(["d", record.pubkey.as_str()]).map_err(|e| format!("invalid d-tag: {e}"))?];
@@ -221,7 +233,7 @@ mod tests {
 
     #[test]
     fn build_agent_event_produces_correct_kind() {
-        let builder = build_agent_event(&sample_agent()).unwrap();
+        let builder = build_agent_event(&sample_agent(), None).unwrap();
         let keys = nostr::Keys::generate();
         let event = builder.sign_with_keys(&keys).unwrap();
         assert_eq!(event.kind.as_u16() as u32, KIND_MANAGED_AGENT);
@@ -229,7 +241,7 @@ mod tests {
 
     #[test]
     fn d_tag_is_agent_pubkey() {
-        let builder = build_agent_event(&sample_agent()).unwrap();
+        let builder = build_agent_event(&sample_agent(), None).unwrap();
         let keys = nostr::Keys::generate();
         let event = builder.sign_with_keys(&keys).unwrap();
         let d = event
@@ -249,7 +261,7 @@ mod tests {
     /// carry secrets, the provider backend blob, env vars, or runtime fields.
     #[test]
     fn content_excludes_secrets_and_runtime_fields() {
-        let json = serde_json::to_string(&agent_event_content(&sample_agent())).unwrap();
+        let json = serde_json::to_string(&agent_event_content(&sample_agent(), None)).unwrap();
 
         // Secrets — must never appear.
         assert!(
@@ -309,7 +321,7 @@ mod tests {
     #[test]
     fn projection_slims_definition_quad_only_when_linked() {
         let linked = sample_agent(); // persona_id: Some
-        let json = serde_json::to_string(&agent_event_content(&linked)).unwrap();
+        let json = serde_json::to_string(&agent_event_content(&linked, None)).unwrap();
         assert!(!json.contains("system_prompt"));
         assert!(!json.contains("\"model\""));
         assert!(!json.contains("\"provider\""));
@@ -320,7 +332,7 @@ mod tests {
 
         let mut standalone = sample_agent();
         standalone.persona_id = None;
-        let json = serde_json::to_string(&agent_event_content(&standalone)).unwrap();
+        let json = serde_json::to_string(&agent_event_content(&standalone, None)).unwrap();
         assert!(json.contains("system_prompt"), "standalone keeps prompt");
         assert!(json.contains("\"model\""), "standalone keeps model");
         assert!(json.contains("\"provider\""), "standalone keeps provider");
@@ -333,9 +345,19 @@ mod tests {
     #[test]
     fn projection_is_deterministic() {
         let agent = sample_agent();
-        let a = serde_json::to_string(&agent_event_content(&agent)).unwrap();
-        let b = serde_json::to_string(&agent_event_content(&agent)).unwrap();
+        let a = serde_json::to_string(&agent_event_content(&agent, None)).unwrap();
+        let b = serde_json::to_string(&agent_event_content(&agent, None)).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn projection_binds_agent_to_host_computer() {
+        let mut agent = sample_agent();
+        agent.backend = super::super::BackendKind::Local;
+        let first = agent_event_content(&agent, Some("computer-a"));
+        let second = agent_event_content(&agent, Some("computer-b"));
+        assert_eq!(first.computer_id.as_deref(), Some("computer-a"));
+        assert_ne!(first, second, "moving an agent must republish its binding");
     }
 
     /// Mutating only runtime fields must NOT change the projection — the
@@ -350,8 +372,8 @@ mod tests {
         churned.last_error = Some("different error".to_string());
         churned.updated_at = "2099-12-31T00:00:00Z".to_string();
         assert_eq!(
-            agent_event_content(&agent),
-            agent_event_content(&churned),
+            agent_event_content(&agent, None),
+            agent_event_content(&churned, None),
             "runtime field churn must not alter the published projection"
         );
     }
@@ -362,7 +384,10 @@ mod tests {
         let agent = sample_agent();
         let mut edited = agent.clone();
         edited.parallelism += 1;
-        assert_ne!(agent_event_content(&agent), agent_event_content(&edited));
+        assert_ne!(
+            agent_event_content(&agent, None),
+            agent_event_content(&edited, None)
+        );
 
         // Definition-level edit surfaces only for definition-less records —
         // linked records resolve the prompt through their definition.
@@ -371,14 +396,14 @@ mod tests {
         let mut edited = standalone.clone();
         edited.system_prompt = Some("A different prompt.".to_string());
         assert_ne!(
-            agent_event_content(&standalone),
-            agent_event_content(&edited)
+            agent_event_content(&standalone, None),
+            agent_event_content(&edited, None)
         );
         let mut linked_edit = sample_agent();
         linked_edit.system_prompt = Some("A different prompt.".to_string());
         assert_eq!(
-            agent_event_content(&sample_agent()),
-            agent_event_content(&linked_edit),
+            agent_event_content(&sample_agent(), None),
+            agent_event_content(&linked_edit, None),
             "a linked record's local prompt snapshot is not wire state"
         );
     }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Buzz",
+  "productName": "Buzzcord",
   "version": "0.5.2",
-  "identifier": "xyz.block.buzz.app",
+  "identifier": "com.ttizze.buzzcord.desktop",
   "build": {
     "beforeDevCommand": {
       "script": "exec ./node_modules/.bin/vite",
@@ -45,7 +45,7 @@
     },
     "deep-link": {
       "desktop": {
-        "schemes": ["buzz"]
+        "schemes": ["buzzcord", "buzz"]
       }
     }
   },

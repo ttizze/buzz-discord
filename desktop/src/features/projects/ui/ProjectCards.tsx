@@ -1,10 +1,13 @@
 import {
   CircleDot,
+  Folder,
   FolderGit2,
   GitCommit,
   GitPullRequest,
   TerminalSquare,
   Trash2,
+  Laptop,
+  Server,
 } from "lucide-react";
 import * as React from "react";
 
@@ -263,16 +266,44 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-export function EmptyState() {
+function ProjectComputerLabel({ project }: { project: Project }) {
+  if (project.source !== "workspace") return null;
+  const Icon = project.computerAccess === "shared" ? Server : Laptop;
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <Icon className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">
+        {project.computerName ?? "Computer"} ·{" "}
+        {project.workspacePath ?? "Workspace"}
+      </span>
+      {project.gitRepository ? (
+        <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-2xs">
+          Git
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export function EmptyState({ onCreate }: { onCreate?: () => void }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-16 text-center">
-      <FolderGit2 className="h-10 w-10 text-muted-foreground/40" />
+      <Folder className="h-10 w-10 text-muted-foreground/40" />
       <div className="space-y-1">
         <p className="text-sm font-medium text-foreground">No projects yet</p>
         <p className="text-sm text-muted-foreground">
-          Projects published to this relay will appear here.
+          Choose a folder on a connected computer to share it here.
         </p>
       </div>
+      {onCreate ? (
+        <Button
+          data-testid="empty-projects-create"
+          onClick={onCreate}
+          type="button"
+        >
+          Create project
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -430,7 +461,11 @@ export function ProjectGridCard({
         <div className="flex min-w-0 items-center justify-between gap-3 px-4 pt-3">
           <div className="flex min-w-0 items-center gap-2">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
-              <FolderGit2 className="h-4.5 w-4.5 text-muted-foreground" />
+              {project.source === "workspace" ? (
+                <Folder className="h-4.5 w-4.5 text-muted-foreground" />
+              ) : (
+                <FolderGit2 className="h-4.5 w-4.5 text-muted-foreground" />
+              )}
             </span>
             <span className="min-w-0 truncate text-sm font-semibold text-foreground">
               {project.name}
@@ -455,8 +490,12 @@ export function ProjectGridCard({
         </div>
 
         <p className="line-clamp-2 min-h-10 px-4 py-2 text-sm text-muted-foreground">
-          {project.description || "A shared space for internal git work."}
+          {project.description || "A shared workspace for people and agents."}
         </p>
+
+        <div className="px-4 pb-2">
+          <ProjectComputerLabel project={project} />
+        </div>
 
         <div className="relative z-10 flex items-center px-4 pb-1">
           <ProjectPeopleStack
@@ -500,7 +539,11 @@ export function ProjectListRow({
       <div className="flex min-w-0 items-start gap-2.5">
         <div className="flex min-w-0 flex-1 items-start gap-2.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
-            <FolderGit2 className="h-4.5 w-4.5 text-muted-foreground" />
+            {project.source === "workspace" ? (
+              <Folder className="h-4.5 w-4.5 text-muted-foreground" />
+            ) : (
+              <FolderGit2 className="h-4.5 w-4.5 text-muted-foreground" />
+            )}
           </span>
           <div className="-mt-0.5 min-w-0">
             <div className="flex min-w-0 items-center gap-2">
@@ -510,8 +553,10 @@ export function ProjectListRow({
               <StatusPill status={project.status} />
             </div>
             <p className={PROJECT_LIST_ROW_PREVIEW_CLASS}>
-              {project.description || "A shared space for internal git work."}
+              {project.description ||
+                "A shared workspace for people and agents."}
             </p>
+            <ProjectComputerLabel project={project} />
           </div>
         </div>
 

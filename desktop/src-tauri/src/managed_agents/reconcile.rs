@@ -41,7 +41,8 @@ pub(crate) fn reconcile_agents_to_events(
         return;
     };
 
-    match reconcile_agents_in_dir_at(&base_dir, keys, db_path) {
+    let computer_id = crate::computer_id(app).ok();
+    match reconcile_agents_in_dir_at(&base_dir, keys, db_path, computer_id.as_deref()) {
         Ok(0) => {}
         Ok(reconciled) => {
             eprintln!(
@@ -67,13 +68,14 @@ pub(crate) fn reconcile_agents_to_events(
 /// Returns the number of agents (re)written to the retention store.
 #[cfg(test)]
 pub(crate) fn reconcile_agents_in_dir(base_dir: &Path, keys: &nostr::Keys) -> Result<u32, String> {
-    reconcile_agents_in_dir_at(base_dir, keys, &base_dir.join("retention.db"))
+    reconcile_agents_in_dir_at(base_dir, keys, &base_dir.join("retention.db"), None)
 }
 
 fn reconcile_agents_in_dir_at(
     base_dir: &Path,
     keys: &nostr::Keys,
     db_path: &Path,
+    computer_id: Option<&str>,
 ) -> Result<u32, String> {
     let store_path = base_dir.join("managed-agents.json");
     if !store_path.exists() {
@@ -104,7 +106,7 @@ fn reconcile_agents_in_dir_at(
             continue;
         }
 
-        if retain_agent_record(&conn, keys, record)? {
+        if retain_agent_record(&conn, keys, record, computer_id)? {
             reconciled += 1;
         }
     }
@@ -126,6 +128,7 @@ pub(crate) fn retain_agent_record(
     conn: &rusqlite::Connection,
     keys: &nostr::Keys,
     record: &ManagedAgentRecord,
+    computer_id: Option<&str>,
 ) -> Result<bool, String> {
     let owner_pubkey = keys.public_key().to_hex();
     let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, &record.pubkey)?;
@@ -137,7 +140,7 @@ pub(crate) fn retain_agent_record(
     // it serializes — republishing every agent every boot. Content is
     // timestamp-independent, so the monotonic bump below never forces a
     // spurious republish; an unchanged agent is still a true no-op.
-    let event = build_agent_event(record)?
+    let event = build_agent_event(record, computer_id)?
         .custom_created_at(monotonic_created_at(
             existing.as_ref().map(|row| row.created_at),
         ))

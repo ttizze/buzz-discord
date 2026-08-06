@@ -25,6 +25,7 @@ import '../profile/user_profile.dart';
 import '../forum/forum_posts_view.dart';
 import 'channel.dart';
 import 'channel_link_navigation.dart';
+import 'agent_activity/streaming_messages_provider.dart';
 import 'agent_activity/working_bots_provider.dart';
 import 'channel_management_provider.dart';
 import 'channel_messages_provider.dart';
@@ -53,6 +54,7 @@ import 'timeline_message.dart';
 part 'channel_detail_page/message_list.dart';
 part 'channel_detail_page/system_rows.dart';
 part 'channel_detail_page/message_bubble.dart';
+part 'channel_detail_page/streaming_message_bubble.dart';
 part 'channel_detail_page/banners.dart';
 part 'channel_detail_page/app_bar.dart';
 
@@ -144,6 +146,9 @@ class ChannelDetailPage extends HookConsumerWidget {
               e.pubkey.toLowerCase() != currentPubkey.toLowerCase(),
         )
         .toList();
+    final streamingMessages = ref.watch(
+      streamingAgentMessagesProvider(channel.id),
+    );
     final baseChannel =
         channelsAsync
             .whenData(
@@ -358,6 +363,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                         return _MessageList(
                           entries: entries,
                           allMessages: messages,
+                          streamingMessages: streamingMessages,
                           initialMessageId: initialMessageId,
                           initialThreadRootId: initialThreadRootId,
                           channelId: channel.id,

@@ -97,6 +97,7 @@ export function useAppNavigation() {
         commitHash?: string;
         pullRequestId?: string;
         issueId?: string;
+        taskId?: string;
       },
     ) =>
       commitNavigation(
@@ -113,6 +114,7 @@ export function useAppNavigation() {
               ? { pullRequestId: behavior.pullRequestId }
               : {}),
             ...(behavior?.issueId ? { issueId: behavior.issueId } : {}),
+            ...(behavior?.taskId ? { taskId: behavior.taskId } : {}),
           },
         },
         behavior,

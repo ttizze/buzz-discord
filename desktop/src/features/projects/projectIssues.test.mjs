@@ -12,7 +12,8 @@ import {
 const OWNER = "a".repeat(64);
 const AUTHOR = "b".repeat(64);
 const ATTACKER = "c".repeat(64);
-const REPO_ADDRESS = `30617:${OWNER}:demo`;
+const REPO_ADDRESS = `30623:${OWNER}:demo`;
+const LEGACY_REPO_ADDRESS = `30617:${OWNER}:demo`;
 
 function issueEvent(overrides = {}) {
   return {
@@ -137,5 +138,13 @@ test("builds repository-scoped issue creation tags", () => {
       ["p", OWNER],
       ["subject", "Fix the broken workflow"],
     ],
+  );
+  assert.equal(
+    buildGitIssueTags({
+      repoAddress: LEGACY_REPO_ADDRESS,
+      repoOwner: OWNER,
+      title: "Legacy repository",
+    })[0][1],
+    LEGACY_REPO_ADDRESS,
   );
 });

@@ -27,6 +27,7 @@ import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelFindBar } from "@/features/search/ui/ChannelFindBar";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
 import { ChannelManagementAuxiliaryPanel } from "@/features/channels/ui/ChannelManagementAuxiliaryPanel";
+import { DiscordMembersRail } from "@/features/channels/ui/DiscordMembersRail";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ThreadViewModeToggle } from "@/features/channels/ui/ThreadViewModeToggle";
 import { FocusThreadDrawer } from "@/features/channels/ui/FocusThreadDrawer";
@@ -95,6 +96,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   welcomeKickoffStage = null,
   welcomeKickoffSettingUp = false,
   messages,
+  membersSidebarOpen = false,
   threadSummaries,
   firstUnreadMessageId = null,
   unreadCount = 0,
@@ -810,7 +812,15 @@ export const ChannelPane = React.memo(function ChannelPane({
           ) : null}
         </section>
       ) : null}
-
+      <DiscordMembersRail
+        channel={
+          !isSinglePanelView && !hasSplitAuxiliaryPane && !membersSidebarOpen
+            ? activeChannel
+            : null
+        }
+        currentPubkey={currentPubkey}
+        onOpenMembers={onOpenMembers}
+      />
       {/*
        * `AnimatePresence` keeps the focus thread drawer mounted through its exit
        * animation — without it the drawer's own existence condition

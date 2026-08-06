@@ -25,7 +25,7 @@ const PROJECT_ACTIVITY_KINDS = new Set([
   KIND_GIT_STATUS_CLOSED,
   KIND_GIT_STATUS_DRAFT,
 ]);
-const REPO_ADDRESS_PATTERN = /^30617:[0-9a-f]{64}:.+$/i;
+const REPO_ADDRESS_PATTERN = /^(?:30617|30623):[0-9a-f]{64}:.+$/i;
 
 export type ProjectInboxWorkItem =
   | {

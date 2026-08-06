@@ -21,12 +21,11 @@ use std::time::Duration;
 use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::Result;
 use buzz_core::kind::{
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
-    KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+    KIND_JOB_REQUEST, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_STREAM_MESSAGE, KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
-    decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
-    OBSERVER_MAX_PLAINTEXT_LEN,
+    decrypt_observer_payload, encrypt_observer_payload, OBSERVER_MAX_PLAINTEXT_LEN,
 };
 use clap::Parser;
 use config::{
@@ -408,13 +407,18 @@ impl ObserverPublishPacer {
     }
 }
 
+struct ObserverTelemetryTarget {
+    recipient_pubkey_hex: String,
+    recipient_pubkey: PublicKey,
+    owner_pubkey_hex: String,
+}
+
 fn spawn_relay_observer_publisher(
     observer: observer::ObserverHandle,
     publisher: RelayEventPublisher,
     keys: nostr::Keys,
     agent_pubkey_hex: String,
-    owner_pubkey_hex: String,
-    owner_pubkey: PublicKey,
+    target: Option<ObserverTelemetryTarget>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Subscribe BEFORE snapshotting so an event emitted between the two
@@ -423,16 +427,7 @@ fn spawn_relay_observer_publisher(
         // high-water `seq` (monotonic, assigned at emit).
         let rx = observer.subscribe();
         let snapshot = observer.snapshot();
-        run_relay_observer_publisher(
-            snapshot,
-            rx,
-            publisher,
-            keys,
-            agent_pubkey_hex,
-            owner_pubkey_hex,
-            owner_pubkey,
-        )
-        .await;
+        run_relay_observer_publisher(snapshot, rx, publisher, keys, agent_pubkey_hex, target).await;
     })
 }
 
@@ -442,11 +437,11 @@ async fn run_relay_observer_publisher(
     publisher: RelayEventPublisher,
     keys: nostr::Keys,
     agent_pubkey_hex: String,
-    owner_pubkey_hex: String,
-    owner_pubkey: PublicKey,
+    target: Option<ObserverTelemetryTarget>,
 ) {
     let mut coalescer = ObserverChunkCoalescer::default();
     let mut pacer = ObserverPublishPacer::new();
+    let mut project_tasks = HashMap::new();
     let max_snapshot_seq = snapshot.iter().map(|event| event.seq).max().unwrap_or(0);
     for event in snapshot {
         for event in coalescer.ingest(event) {
@@ -454,9 +449,9 @@ async fn run_relay_observer_publisher(
                 &publisher,
                 &keys,
                 &agent_pubkey_hex,
-                &owner_pubkey_hex,
-                &owner_pubkey,
+                target.as_ref(),
                 &mut pacer,
+                &mut project_tasks,
                 event,
             )
             .await;
@@ -478,7 +473,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.ingest(event) {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                target.as_ref(), &mut pacer, &mut project_tasks, event,
                             ).await;
                         }
                     }
@@ -486,7 +481,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.flush() {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                target.as_ref(), &mut pacer, &mut project_tasks, event,
                             ).await;
                         }
                         tracing::warn!(dropped = count, "relay observer publisher lagged");
@@ -495,7 +490,7 @@ async fn run_relay_observer_publisher(
                         for event in coalescer.flush() {
                             publish_relay_observer_event(
                                 &publisher, &keys, &agent_pubkey_hex,
-                                &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                                target.as_ref(), &mut pacer, &mut project_tasks, event,
                             ).await;
                         }
                         break;
@@ -507,7 +502,7 @@ async fn run_relay_observer_publisher(
                 for event in coalescer.flush() {
                     publish_relay_observer_event(
                         &publisher, &keys, &agent_pubkey_hex,
-                        &owner_pubkey_hex, &owner_pubkey, &mut pacer, event,
+                        target.as_ref(), &mut pacer, &mut project_tasks, event,
                     ).await;
                 }
             }
@@ -791,26 +786,40 @@ async fn publish_relay_observer_event(
     publisher: &RelayEventPublisher,
     keys: &nostr::Keys,
     agent_pubkey_hex: &str,
-    owner_pubkey_hex: &str,
-    owner_pubkey: &PublicKey,
+    target: Option<&ObserverTelemetryTarget>,
     pacer: &mut ObserverPublishPacer,
+    project_tasks: &mut HashMap<String, ProjectTaskContext>,
     mut event: observer::ObserverEvent,
 ) {
-    pacer.wait().await;
     // Trim oversized frames to fit the plaintext cap rather than letting
     // encrypt_observer_payload reject and drop them whole (silent telemetry loss).
     fit_observer_event_to_budget(&mut event);
-    let encrypted = match encrypt_observer_payload(keys, owner_pubkey, &event) {
+    remember_project_task_context(project_tasks, &event);
+
+    if let Some(context) = event
+        .turn_id
+        .as_ref()
+        .and_then(|turn_id| project_tasks.get(turn_id))
+    {
+        pacer.wait().await;
+        publish_project_task_observer_event(publisher, keys, context, &event).await;
+    }
+
+    let Some(target) = target else {
+        return;
+    };
+    pacer.wait().await;
+    let encrypted = match encrypt_observer_payload(keys, &target.recipient_pubkey, &event) {
         Ok(encrypted) => encrypted,
         Err(error) => {
             tracing::warn!("failed to encrypt relay observer event: {error}");
             return;
         }
     };
-    let builder = match buzz_sdk::build_agent_observer_frame(
-        owner_pubkey_hex,
+    let builder = match buzz_sdk::build_delegated_agent_observer_telemetry_frame(
+        &target.recipient_pubkey_hex,
         agent_pubkey_hex,
-        OBSERVER_FRAME_TELEMETRY,
+        &target.owner_pubkey_hex,
         &encrypted,
     ) {
         Ok(builder) => builder,
@@ -828,6 +837,98 @@ async fn publish_relay_observer_event(
     };
     if let Err(error) = publisher.publish_event(signed).await {
         tracing::warn!("relay observer event dropped: {error}");
+    }
+}
+
+#[derive(Clone)]
+struct ProjectTaskContext {
+    task_id: String,
+    project_address: String,
+    channel_id: String,
+}
+
+fn remember_project_task_context(
+    project_tasks: &mut HashMap<String, ProjectTaskContext>,
+    event: &observer::ObserverEvent,
+) {
+    if event.kind != "turn_started" {
+        return;
+    }
+    let Some(turn_id) = event.turn_id.as_ref() else {
+        return;
+    };
+    let Some(task) = event.payload.get("projectTask") else {
+        return;
+    };
+    let (Some(task_id), Some(project_address), Some(channel_id)) = (
+        task.get("taskId").and_then(serde_json::Value::as_str),
+        task.get("projectAddress")
+            .and_then(serde_json::Value::as_str),
+        event.channel_id.as_deref(),
+    ) else {
+        return;
+    };
+    project_tasks.insert(
+        turn_id.clone(),
+        ProjectTaskContext {
+            task_id: task_id.to_string(),
+            project_address: project_address.to_string(),
+            channel_id: channel_id.to_string(),
+        },
+    );
+    if project_tasks.len() > 256 {
+        if let Some(oldest) = project_tasks.keys().next().cloned() {
+            project_tasks.remove(&oldest);
+        }
+    }
+}
+
+async fn publish_project_task_observer_event(
+    publisher: &RelayEventPublisher,
+    keys: &nostr::Keys,
+    context: &ProjectTaskContext,
+    event: &observer::ObserverEvent,
+) {
+    use buzz_core::kind::{KIND_JOB_ACCEPTED, KIND_JOB_ERROR, KIND_JOB_PROGRESS, KIND_JOB_RESULT};
+    use nostr::{EventBuilder, Kind, Tag};
+
+    let kind = match event.kind.as_str() {
+        "turn_started" => KIND_JOB_ACCEPTED,
+        "turn_completed" => KIND_JOB_RESULT,
+        "turn_error" => KIND_JOB_ERROR,
+        _ => KIND_JOB_PROGRESS,
+    };
+    let tags = [
+        Tag::parse(["h", context.channel_id.as_str()]),
+        Tag::parse(["a", context.project_address.as_str()]),
+        Tag::parse(["e", context.task_id.as_str(), "", "root"]),
+    ];
+    let tags = match tags.into_iter().collect::<Result<Vec<_>, _>>() {
+        Ok(tags) => tags,
+        Err(error) => {
+            tracing::warn!("failed to build project task observer tags: {error}");
+            return;
+        }
+    };
+    let content = match serde_json::to_string(event) {
+        Ok(content) => content,
+        Err(error) => {
+            tracing::warn!("failed to serialize project task observer event: {error}");
+            return;
+        }
+    };
+    let signed = match EventBuilder::new(Kind::Custom(kind as u16), content)
+        .tags(tags)
+        .sign_with_keys(keys)
+    {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::warn!("failed to sign project task observer event: {error}");
+            return;
+        }
+    };
+    if let Err(error) = publisher.publish_event(signed).await {
+        tracing::warn!("project task observer event dropped: {error}");
     }
 }
 
@@ -1294,9 +1395,9 @@ async fn tokio_main() -> Result<()> {
 
     tracing::info!("buzz-acp starting: {}", config.summary());
 
-    let observer = config
-        .relay_observer
-        .then(observer::ObserverHandle::in_process);
+    // The in-process feed powers both optional owner telemetry and shared
+    // Project Agent Tasks. It must exist even when encrypted telemetry is off.
+    let observer = Some(observer::ObserverHandle::in_process());
     if let Some(handle) = &observer {
         handle.emit(
             "harness_started",
@@ -1392,39 +1493,57 @@ async fn tokio_main() -> Result<()> {
 
     let mut relay_observer_control_rx = None;
     let mut relay_observer_publisher_task = None;
-    let mut relay_observer_publisher = None;
+    let mut telemetry_target = None;
     if config.relay_observer {
-        if let (Some(observer), Some(owner_pubkey_hex)) =
-            (observer.clone(), owner_cache.pubkey.clone())
+        let recipient_pubkey_hex = config
+            .relay_observer_recipient
+            .clone()
+            .or_else(|| owner_cache.pubkey.clone());
+        if let (Some(recipient_pubkey_hex), Some(owner_pubkey_hex)) =
+            (recipient_pubkey_hex, owner_cache.pubkey.clone())
         {
-            match PublicKey::from_hex(&owner_pubkey_hex) {
-                Ok(owner_pubkey) => {
-                    relay_observer_publisher = Some((
-                        observer,
-                        relay.event_publisher(),
-                        config.keys.clone(),
-                        pubkey_hex.clone(),
+            match PublicKey::from_hex(&recipient_pubkey_hex) {
+                Ok(recipient_pubkey) => {
+                    telemetry_target = Some(ObserverTelemetryTarget {
+                        recipient_pubkey_hex: recipient_pubkey_hex.clone(),
+                        recipient_pubkey,
                         owner_pubkey_hex,
-                        owner_pubkey,
-                    ));
-                    relay
-                        .subscribe_observer_controls()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("observer control subscribe error: {e}"))?;
-                    relay_observer_control_rx = relay.take_observer_control_rx();
-                    tracing::info!("relay observer enabled");
+                    });
+                    tracing::info!(
+                        recipient = %recipient_pubkey_hex,
+                        "relay observer telemetry enabled"
+                    );
                 }
                 Err(error) => {
-                    tracing::warn!("relay observer disabled: invalid owner pubkey: {error}");
+                    tracing::warn!("relay observer disabled: invalid recipient pubkey: {error}");
                 }
             }
         } else {
             tracing::warn!(
-                "relay observer requested but no agent owner was resolved at startup; \
-                 observer frames will not be published"
+                "relay observer requested but both an agent owner and telemetry recipient \
+                 are required; observer frames will not be published"
             );
         }
+
+        if owner_cache.pubkey.is_some() {
+            relay
+                .subscribe_observer_controls()
+                .await
+                .map_err(|e| anyhow::anyhow!("observer control subscribe error: {e}"))?;
+            relay_observer_control_rx = relay.take_observer_control_rx();
+        } else {
+            tracing::info!("relay observer controls disabled: no agent owner resolved");
+        }
     }
+    let mut relay_observer_publisher = observer.clone().map(|observer| {
+        (
+            observer,
+            relay.event_publisher(),
+            config.keys.clone(),
+            pubkey_hex.clone(),
+            telemetry_target,
+        )
+    });
 
     let channel_info_map = relay
         .discover_channels()
@@ -1442,6 +1561,7 @@ async fn tokio_main() -> Result<()> {
                 kinds: config.kinds_override.clone().unwrap_or_else(|| {
                     vec![
                         KIND_STREAM_MESSAGE,
+                        KIND_JOB_REQUEST,
                         KIND_WORKFLOW_APPROVAL_REQUESTED,
                         KIND_STREAM_REMINDER,
                     ]
@@ -1485,16 +1605,14 @@ async fn tokio_main() -> Result<()> {
         }
     }
 
-    if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
-        relay_observer_publisher.take()
+    if let Some((observer, publisher, keys, agent_pubkey, target)) = relay_observer_publisher.take()
     {
         relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
             observer,
             publisher,
             keys,
             agent_pubkey,
-            owner_pubkey,
-            owner,
+            target,
         ));
     }
 
@@ -1547,6 +1665,9 @@ async fn tokio_main() -> Result<()> {
             .unwrap_or_else(|_| std::path::PathBuf::from("/"))
             .to_string_lossy()
             .to_string(),
+        computer_id: std::env::var("BUZZ_COMPUTER_ID")
+            .ok()
+            .filter(|value| uuid::Uuid::parse_str(value).is_ok()),
         rest_client: relay.rest_client(),
         channel_info: pool::ChannelInfoResolver::new(channel_info_map, relay.rest_client()),
         context_message_limit: config.context_message_limit,
@@ -4831,8 +4952,11 @@ mod observer_snapshot_race_tests {
             publisher,
             agent_keys.clone(),
             agent_keys.public_key().to_hex(),
-            owner_keys.public_key().to_hex(),
-            owner_keys.public_key(),
+            Some(ObserverTelemetryTarget {
+                recipient_pubkey_hex: owner_keys.public_key().to_hex(),
+                recipient_pubkey: owner_keys.public_key(),
+                owner_pubkey_hex: owner_keys.public_key().to_hex(),
+            }),
         )
         .await;
 
@@ -4850,6 +4974,58 @@ mod observer_snapshot_race_tests {
             ["before", "overlap", "after"],
             "each event must be published exactly once, in order"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn project_task_turn_publishes_shared_codex_visible_frame_without_owner_telemetry() {
+        let observer = observer::ObserverHandle::in_process();
+        let agent_keys = Keys::generate();
+        let (publisher, mut published_rx) = RelayEventPublisher::test_pair();
+        let channel_id = Uuid::new_v4().to_string();
+        let task_id = "a".repeat(64);
+        let project_address = format!("30617:{}:buzz", "b".repeat(64));
+        observer.emit(
+            "turn_started",
+            Some(0),
+            &observer::ObserverContext {
+                channel_id: Some(channel_id.clone()),
+                session_id: None,
+                turn_id: Some("turn-project-task".into()),
+                started_at: None,
+            },
+            serde_json::json!({
+                "projectTask": {
+                    "taskId": task_id,
+                    "projectAddress": project_address,
+                }
+            }),
+        );
+        let rx = observer.subscribe();
+        let snapshot = observer.snapshot();
+        drop(observer);
+
+        run_relay_observer_publisher(
+            snapshot,
+            rx,
+            publisher,
+            agent_keys.clone(),
+            agent_keys.public_key().to_hex(),
+            None,
+        )
+        .await;
+
+        let event = published_rx.recv().await.expect("shared task frame");
+        assert_eq!(
+            event.kind,
+            nostr::Kind::Custom(buzz_core::kind::KIND_JOB_ACCEPTED as u16)
+        );
+        assert!(event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["h", channel_id.as_str()]));
+        let decoded: serde_json::Value =
+            serde_json::from_str(&event.content).expect("observer JSON");
+        assert_eq!(decoded["kind"], "turn_started");
     }
 }
 
@@ -5031,6 +5207,7 @@ mod build_mcp_servers_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_observer_recipient: None,
             lazy_pool: false,
             agent_owner: None,
             no_base_prompt: false,
@@ -5252,6 +5429,7 @@ mod error_outcome_emission_tests {
             persona_env_vars: vec![],
             has_generated_codex_config: false,
             relay_observer: false,
+            relay_observer_recipient: None,
             lazy_pool: false,
             agent_owner: None,
             no_base_prompt: false,

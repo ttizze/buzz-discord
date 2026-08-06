@@ -38,11 +38,12 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Handle buzz:// deep links (e.g. buzz://message?channel=…&id=…). -->
+            <!-- Handle Buzzcord deep links and legacy buzz:// links. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="buzzcord"/>
                 <data android:scheme="buzz"/>
             </intent-filter>
             <!-- Disable Flutter's built-in deeplink handler; app_links owns

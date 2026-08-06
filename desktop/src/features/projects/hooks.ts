@@ -25,6 +25,7 @@ import {
   KIND_GIT_STATUS_OPEN,
   KIND_REPO_ANNOUNCEMENT,
   KIND_REPO_STATE,
+  KIND_SHARED_PROJECT,
   KIND_TEXT_NOTE,
 } from "@/shared/constants/kinds";
 import type {
@@ -55,57 +56,20 @@ import {
   projectPullRequestEventsToPullRequests,
 } from "./projectPullRequests.mjs";
 import { fetchProjectsWorkItems } from "./projectWorkItems";
+import type { Project, ProjectActivitySummary, RepoState } from "./types";
 
 export type {
   ProjectIssue,
   ProjectPullRequest,
   ProjectPullRequestCommentAnchor,
+  Project,
+  ProjectActivitySummary,
+  RepoState,
 };
 
 export type ProjectPullRequestCommentDecision = "request-changes";
 
 const HIDDEN_PROJECT_CARDS_KEY = "buzz.projects.hidden-cards.v1";
-
-export type Project = {
-  id: string;
-  dtag: string;
-  name: string;
-  description: string;
-  cloneUrls: string[];
-  webUrl: string | null;
-  owner: string;
-  contributors: string[];
-  createdAt: number;
-  projectChannelId: string | null;
-  status: string;
-  defaultBranch: string;
-  repoAddress: string;
-};
-
-export type RepoState = {
-  branches: Array<{ name: string; commit: string }>;
-  tags: Array<{ name: string; commit: string }>;
-  head: string | null;
-  updatedAt: number;
-};
-
-export type ProjectActivitySummary = {
-  repoAddress: string;
-  issueCount: number;
-  prCount: number;
-  commitCount: number;
-  activityCount: number;
-  updatedAt: number;
-  participantPubkeys: string[];
-  latestCommit: {
-    author: string | null;
-    commit: string;
-    createdAt: number;
-    title: string;
-  } | null;
-  /** Activity event counts bucketed by local-time day key ("YYYY-MM-DD"). */
-  activityByDay: Record<string, number>;
-};
 
 export type {
   ProjectLocalRepository,
@@ -144,8 +108,11 @@ function getCloneUrls(event: RelayEvent): string[] {
   return tag ? tag.slice(1) : [];
 }
 
-function projectCoordinate(project: Pick<Project, "owner" | "dtag">): string {
-  return `${KIND_REPO_ANNOUNCEMENT}:${project.owner}:${project.dtag}`;
+function projectCoordinate(
+  project: Pick<Project, "owner" | "dtag">,
+  kind = KIND_SHARED_PROJECT,
+): string {
+  return `${kind}:${project.owner}:${project.dtag}`;
 }
 
 function readHiddenProjectCards(): string[] {
@@ -166,11 +133,13 @@ function readHiddenProjectCards(): string[] {
 }
 
 function isHiddenLocally(project: Project): boolean {
-  return readHiddenProjectCards().includes(projectCoordinate(project));
+  return readHiddenProjectCards().includes(
+    project.projectAddress ?? project.repoAddress,
+  );
 }
 
 function isDeletedByA(project: Project, deletionEvents: RelayEvent[]): boolean {
-  const coordinate = projectCoordinate(project);
+  const coordinate = project.projectAddress ?? project.repoAddress;
   // NIP-09: a deletion is only valid when signed by the author of the
   // referenced event — otherwise anyone could hide someone else's project.
   return deletionEvents.some(
@@ -181,7 +150,7 @@ function isDeletedByA(project: Project, deletionEvents: RelayEvent[]): boolean {
 }
 
 /**
- * Converts a kind:30617 repo announcement into a `Project`.
+ * Converts a shared-project or legacy kind:30617 repo announcement into a Project.
  *
  * `relayOrigin` is the resolved relay HTTP origin (from `getCachedRelayOrigin`)
  * used to synthesize a canonical clone URL when the announcement omits an
@@ -193,25 +162,28 @@ export function eventToProject(
   relayOrigin?: string | null,
 ): Project {
   const d = getTag(event, "d") ?? event.id;
+  const source =
+    event.kind === KIND_SHARED_PROJECT ? "workspace" : "repository";
   const name = getTag(event, "name") || d;
   const description = getTag(event, "description") || event.content || "";
-  const cloneUrls = effectiveCloneUrls(
-    getCloneUrls(event),
-    relayOrigin,
-    event.pubkey,
-    d,
-  );
+  const cloneUrls =
+    source === "repository"
+      ? effectiveCloneUrls(getCloneUrls(event), relayOrigin, event.pubkey, d)
+      : getCloneUrls(event);
   const webUrl = getTag(event, "web") ?? null;
   const setupUsers = getAllTags(event, "auth");
   const contributors = [...new Set([...getAllTags(event, "p"), ...setupUsers])];
-  // `h`/`project-channel`, `status`, and `default-branch` are NOT part of
-  // NIP-34 — they are read-side tolerance for extension tags no code writes
-  // today (the write path that emitted them was removed). If a write path is
-  // reintroduced it must go through the buzz-sdk repo-announcement builder;
-  // the canonical NIP-34 source for the default branch is the kind:30618
-  // state event's HEAD ref, not a 30617 tag.
+  // `buzz-channel` is Buzz's canonical repository ACL/discussion binding and
+  // is written by `buzz repos create --channel` / `buzz repos bind`. Keep the
+  // older `h` and `project-channel` spellings as read-side compatibility.
+  // `status` and `default-branch` are also compatibility extensions; the
+  // canonical NIP-34 source for the default branch is the kind:30618 state
+  // event's HEAD ref, not a 30617 tag.
   const projectChannelId =
-    getTag(event, "h") ?? getTag(event, "project-channel") ?? null;
+    getTag(event, "buzz-channel") ??
+    getTag(event, "h") ??
+    getTag(event, "project-channel") ??
+    null;
 
   return {
     id: `${event.pubkey}:${d}`,
@@ -226,7 +198,21 @@ export function eventToProject(
     projectChannelId,
     status: getTag(event, "status") ?? "active",
     defaultBranch: getTag(event, "default-branch") ?? "main",
-    repoAddress: projectCoordinate({ owner: event.pubkey, dtag: d }),
+    repoAddress: projectCoordinate(
+      { owner: event.pubkey, dtag: d },
+      event.kind,
+    ),
+    projectAddress: projectCoordinate(
+      { owner: event.pubkey, dtag: d },
+      event.kind,
+    ),
+    source,
+    workspacePath: getTag(event, "workspace") ?? null,
+    computerId: getTag(event, "computer-id") ?? null,
+    computerName: getTag(event, "computer") ?? null,
+    computerAccess:
+      getTag(event, "computer-access") === "shared" ? "shared" : "personal",
+    gitRepository: getTag(event, "git") === "true" || source === "repository",
   };
 }
 
@@ -249,7 +235,7 @@ function dedup(events: RelayEvent[]): RelayEvent[] {
 export async function fetchProjects(): Promise<Project[]> {
   const [events, deletionEvents] = await Promise.all([
     relayClient.fetchEvents({
-      kinds: [KIND_REPO_ANNOUNCEMENT],
+      kinds: [KIND_SHARED_PROJECT, KIND_REPO_ANNOUNCEMENT],
       limit: 200,
     }),
     relayClient.fetchEvents({
@@ -269,8 +255,7 @@ export async function fetchProjects(): Promise<Project[]> {
 
 /**
  * Splits a project route ID into its owner pubkey and dtag. The canonical
- * form is `<owner-pubkey>:<dtag>` (matching `Project.id`) — NIP-34 repo
- * identity is the full `30617:<owner>:<dtag>` coordinate, and two owners can
+ * form is `<owner-pubkey>:<dtag>` (matching `Project.id`). Two owners can
  * both publish the same dtag (forks). Bare-dtag IDs from legacy links are
  * still resolved, ambiguously, to whichever owner the relay returns first.
  */
@@ -288,7 +273,7 @@ function parseProjectRouteId(projectId: string): {
 async function fetchProject(projectId: string): Promise<Project | null> {
   const { owner, dtag } = parseProjectRouteId(projectId);
   const events = await relayClient.fetchEvents({
-    kinds: [KIND_REPO_ANNOUNCEMENT],
+    kinds: [KIND_SHARED_PROJECT, KIND_REPO_ANNOUNCEMENT],
     ...(owner ? { authors: [owner] } : {}),
     "#d": [dtag],
     limit: 10,
@@ -308,7 +293,7 @@ async function fetchProject(projectId: string): Promise<Project | null> {
   const deletionEvents = await relayClient.fetchEvents({
     kinds: [KIND_DELETION],
     authors: [project.owner],
-    "#a": [project.repoAddress],
+    "#a": [project.projectAddress ?? project.repoAddress],
     limit: 10,
   });
 
@@ -667,13 +652,13 @@ async function fetchProjectActivitySummaries(
 async function deleteProject(project: Project): Promise<void> {
   const identity = await getIdentity();
   if (identity.pubkey.toLowerCase() !== project.owner.toLowerCase()) {
-    throw new Error("Only branch owners can delete branches.");
+    throw new Error("Only project owners can delete projects.");
   }
 
   const event = await signRelayEvent({
     kind: KIND_DELETION,
     content: `Delete project ${project.name}`,
-    tags: [["a", project.repoAddress]],
+    tags: [["a", project.projectAddress ?? project.repoAddress]],
   });
 
   await relayClient.publishEvent(
@@ -685,8 +670,9 @@ async function deleteProject(project: Project): Promise<void> {
 
 export const projectsQueryKey = ["projects"] as const;
 
-export function useProjectsQuery() {
+export function useProjectsQuery(options?: { enabled?: boolean }) {
   return useQuery({
+    enabled: options?.enabled ?? true,
     queryKey: projectsQueryKey,
     queryFn: fetchProjects,
     staleTime: 60_000,

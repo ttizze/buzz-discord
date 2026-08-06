@@ -44,12 +44,14 @@ test("top-level project lists align dates and overflow actions", async ({
     return { dateX: dateBox?.x ?? 0, menuX: menuBox?.x ?? 0 };
   }
 
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("button", { name: /^Repositories/ }).click();
   await page.getByRole("button", { name: "Filter repositories" }).click();
   await expect(
-    page.getByRole("menuitem", { name: "My Repositories" }),
+    page.getByRole("menuitem", { name: "My Projects" }),
   ).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Local" })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "Hosted here" }),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   const repositoryPositions = await trailingPositions(
     page.locator('[data-testid^="project-row-"]').first(),
@@ -64,9 +66,7 @@ test("top-level project lists align dates and overflow actions", async ({
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByTestId("projects-create-menu").hover();
-  await expect(
-    page.getByRole("menuitem", { name: "Repository" }),
-  ).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Project" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Issue" })).toBeVisible();
   await page
     .getByRole("menuitem", { name: "Pull Request", exact: true })
@@ -113,7 +113,10 @@ test("top-level project lists align dates and overflow actions", async ({
   ).toBeLessThanOrEqual(ALIGNMENT_TOLERANCE_PX);
 
   await page.setViewportSize({ height: 720, width: 900 });
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page
+    .getByRole("group", { name: "Project owner filter" })
+    .getByRole("button", { name: "Projects", exact: true })
+    .click();
   const responsiveRepositoryRow = page
     .locator('[data-testid^="project-row-"]')
     .first();
@@ -148,7 +151,7 @@ test("commit detail opens from the commits feed with a diff", async ({
 
   // The overview no longer lists repository cards — switch to the
   // Repositories filter to reveal the project cards/rows.
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("button", { name: /^Repositories/ }).click();
 
   // Open the first mock project (dtag "buzz" from the e2e bridge fixture).
   const projectEntry = page
@@ -257,7 +260,7 @@ test("pull request and issue feeds share the commit row structure", async ({
 
   // The overview no longer lists repository cards — switch to the
   // Repositories filter to reveal the project cards/rows.
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("button", { name: /^Repositories/ }).click();
 
   const projectEntry = page
     .locator(

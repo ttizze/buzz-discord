@@ -79,8 +79,8 @@ const REPOSITORY_SCOPE_OPTIONS: Array<{
   value: ProjectsRepositoryScope;
 }> = [
   { label: "All", value: "all" },
-  { label: "My Repositories", value: "mine" },
-  { label: "Local", value: "local" },
+  { label: "My Projects", value: "mine" },
+  { label: "Hosted here", value: "local" },
 ];
 const PULL_REQUEST_SCOPE_OPTIONS: Array<{
   label: string;
@@ -279,9 +279,14 @@ export function ProjectsView() {
   // "Local" filter actually lists, not every directory in the repos folder.
   const localProjectCount = React.useMemo(
     () =>
-      projects.filter((project) => hasLocalCheckout(project, localRepoNames))
-        .length,
-    [localRepoNames, projects],
+      projects.filter(
+        (project) =>
+          (project.source === "workspace" &&
+            normalizePubkey(project.owner) ===
+              normalizePubkey(identityQuery.data?.pubkey ?? "")) ||
+          hasLocalCheckout(project, localRepoNames),
+      ).length,
+    [identityQuery.data?.pubkey, localRepoNames, projects],
   );
 
   const visibleProjects = React.useMemo(() => {
@@ -298,7 +303,12 @@ export function ProjectsView() {
         if (repositoryScope === "mine")
           return isProjectMine(project, currentPubkey);
         if (repositoryScope === "local")
-          return hasLocalCheckout(project, localRepoNames);
+          return (
+            (project.source === "workspace" &&
+              normalizePubkey(project.owner) ===
+                normalizePubkey(currentPubkey ?? "")) ||
+            hasLocalCheckout(project, localRepoNames)
+          );
         if (filter === "agents") {
           return projectHasAgent(project, people, profiles);
         }
@@ -447,10 +457,6 @@ export function ProjectsView() {
     );
   }
 
-  if (projects.length === 0) {
-    return <EmptyState />;
-  }
-
   const repositoryItems =
     visibleProjects.length === 0 ? (
       <EmptyFilteredState />
@@ -566,8 +572,8 @@ export function ProjectsView() {
   const createMenu = (
     <ProjectsCreateMenu
       onCreateIssue={() => setCreateIssueOpen(true)}
+      onCreateProject={() => setCreateProjectOpen(true)}
       onCreatePullRequest={() => setCreatePullRequestOpen(true)}
-      onCreateRepository={() => setCreateProjectOpen(true)}
     />
   );
 
@@ -607,8 +613,7 @@ export function ProjectsView() {
         onCreate={async (input) => {
           const project = await createProjectMutation.mutateAsync(input);
           toast.success(`Project "${project.name}" created.`);
-          // Land on the list that actually shows the new project — the
-          // Overview only surfaces the top few most-active repositories.
+          // Land on the list that shows the newly hosted project.
           handleRepositoryScopeChange("all");
           handleFilterChange("repositories");
         }}
@@ -649,7 +654,9 @@ export function ProjectsView() {
           </div>
           <div className="mx-auto w-full max-w-6xl">
             <div className="w-full min-w-0 pb-4 pt-4">
-              {filter === "all" ? (
+              {projects.length === 0 ? (
+                <EmptyState onCreate={() => setCreateProjectOpen(true)} />
+              ) : filter === "all" ? (
                 <ProjectsOverviewPanel
                   localRepositoryCount={localProjectCount}
                   metadata={

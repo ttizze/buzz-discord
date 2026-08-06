@@ -1,4 +1,4 @@
-import { CircleDot, FolderGit2, GitPullRequest, Plus } from "lucide-react";
+import { CircleDot, Folder, GitPullRequest, Plus } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/shared/ui/button";
@@ -13,11 +13,11 @@ const MENU_ITEM_CLASS =
 export function ProjectsCreateMenu({
   onCreateIssue,
   onCreatePullRequest,
-  onCreateRepository,
+  onCreateProject,
 }: {
   onCreateIssue: () => void;
   onCreatePullRequest: () => void;
-  onCreateRepository: () => void;
+  onCreateProject: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLElement>(null);
@@ -88,12 +88,12 @@ export function ProjectsCreateMenu({
           >
             <button
               className={MENU_ITEM_CLASS}
-              onClick={() => select(onCreateRepository)}
+              onClick={() => select(onCreateProject)}
               role="menuitem"
               type="button"
             >
-              <FolderGit2 />
-              Repository
+              <Folder />
+              Project
             </button>
             <button
               className={MENU_ITEM_CLASS}

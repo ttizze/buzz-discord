@@ -380,7 +380,7 @@ async fn clear_pairing_session_if_current(
     }
 }
 
-async fn handle_nip42_auth<R, W>(
+pub(crate) async fn handle_nip42_auth<R, W>(
     read: &mut R,
     write: &mut W,
     session: &Arc<tokio::sync::Mutex<Option<PairingSession>>>,
@@ -448,12 +448,12 @@ where
 }
 
 /// Serialize a nostr 0.36 Event to `["EVENT", <event>]` JSON string.
-fn event_to_relay_json(event: &nostr::Event) -> String {
+pub(crate) fn event_to_relay_json(event: &nostr::Event) -> String {
     format!("[\"EVENT\",{}]", nostr::JsonUtil::as_json(event))
 }
 
 /// Parse a relay EVENT message into a nostr 0.36 Event (buzz-core compatible).
-fn parse_relay_event(text: &str, sub_id: &str) -> Option<nostr::Event> {
+pub(crate) fn parse_relay_event(text: &str, sub_id: &str) -> Option<nostr::Event> {
     let arr: serde_json::Value = serde_json::from_str(text).ok()?;
     let arr = arr.as_array()?;
     if arr.len() < 3 {
@@ -560,7 +560,11 @@ fn parse_auth_challenge(text: &str) -> Option<String> {
     None
 }
 
-async fn wait_for_eose<S>(read: &mut S, sub_id: &str, dur: Duration) -> Result<(), String>
+pub(crate) async fn wait_for_eose<S>(
+    read: &mut S,
+    sub_id: &str,
+    dur: Duration,
+) -> Result<(), String>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {

@@ -20,12 +20,6 @@ import {
 } from "@/features/profile/lib/identity";
 import { getMentionTagPubkey } from "@/shared/lib/resolveMentionNames";
 import {
-  KIND_JOB_ACCEPTED,
-  KIND_JOB_CANCEL,
-  KIND_JOB_ERROR,
-  KIND_JOB_PROGRESS,
-  KIND_JOB_REQUEST,
-  KIND_JOB_RESULT,
   KIND_HUDDLE_STARTED,
   KIND_DELETION,
   KIND_NIP29_DELETE_EVENT,
@@ -52,12 +46,6 @@ export function isTimelineContentEvent(event: RelayEvent) {
     event.kind === KIND_STREAM_MESSAGE_V2 ||
     event.kind === KIND_STREAM_MESSAGE_DIFF ||
     event.kind === KIND_SYSTEM_MESSAGE ||
-    event.kind === KIND_JOB_REQUEST ||
-    event.kind === KIND_JOB_ACCEPTED ||
-    event.kind === KIND_JOB_PROGRESS ||
-    event.kind === KIND_JOB_RESULT ||
-    event.kind === KIND_JOB_CANCEL ||
-    event.kind === KIND_JOB_ERROR ||
     event.kind === KIND_HUDDLE_STARTED
   );
 }

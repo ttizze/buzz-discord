@@ -90,10 +90,10 @@ void _inviteTests() {
       );
     });
 
-    test('parses buzz join handoff link', () {
+    test('parses Buzzcord join handoff link', () {
       final link = parseInviteDeepLink(
         Uri.parse(
-          'buzz://join?relay=wss%3A%2F%2Frelay.example.com&code=abc123',
+          'buzzcord://join?relay=wss%3A%2F%2Frelay.example.com&code=abc123',
         ),
       );
       expect(
@@ -238,7 +238,7 @@ void _buildMessageLinkTests() {
     test('builds channel + id link', () {
       expect(
         buildMessageLink(channelId: 'd14cd131', messageId: 'abc123'),
-        'buzz://message?channel=d14cd131&id=abc123',
+        'buzzcord://message?channel=d14cd131&id=abc123',
       );
     });
 
@@ -249,7 +249,7 @@ void _buildMessageLinkTests() {
           messageId: 'abc123',
           threadRootId: 'root99',
         ),
-        'buzz://message?channel=d14cd131&id=abc123&thread=root99',
+        'buzzcord://message?channel=d14cd131&id=abc123&thread=root99',
       );
     });
 
@@ -260,7 +260,7 @@ void _buildMessageLinkTests() {
           messageId: 'abc123',
           threadRootId: '',
         ),
-        'buzz://message?channel=d14cd131&id=abc123',
+        'buzzcord://message?channel=d14cd131&id=abc123',
       );
     });
 

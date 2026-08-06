@@ -16,7 +16,7 @@ use buzz_core::{
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
-        OBSERVER_FRAME_TELEMETRY,
+        OBSERVER_FRAME_TELEMETRY, OBSERVER_OWNER_TAG,
     },
 };
 use nostr::{EventBuilder, Kind, Tag};
@@ -265,6 +265,38 @@ pub fn build_agent_observer_frame(
         tag(&["p", &recipient_pubkey])?,
         tag(&[OBSERVER_AGENT_TAG, &agent_pubkey])?,
         tag(&[OBSERVER_FRAME_TAG, frame])?,
+    ];
+
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16),
+        encrypted_content,
+    )
+    .tags(tags))
+}
+
+/// Build delegated encrypted agent telemetry for a recipient other than the
+/// agent owner. The relay verifies `owner_pubkey` against the agent's NIP-OA
+/// ownership mapping while routing the ciphertext only to `recipient_pubkey`.
+pub fn build_delegated_agent_observer_telemetry_frame(
+    recipient_pubkey: &str,
+    agent_pubkey: &str,
+    owner_pubkey: &str,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    if !content_looks_like_nip44(encrypted_content) {
+        return Err(SdkError::InvalidInput(
+            "observer frame content must be NIP-44 v2 ciphertext".into(),
+        ));
+    }
+
+    let recipient_pubkey = check_pubkey_hex(recipient_pubkey, "recipient_pubkey")?;
+    let agent_pubkey = check_pubkey_hex(agent_pubkey, "agent_pubkey")?;
+    let owner_pubkey = check_pubkey_hex(owner_pubkey, "owner_pubkey")?;
+    let tags = vec![
+        tag(&["p", &recipient_pubkey])?,
+        tag(&[OBSERVER_AGENT_TAG, &agent_pubkey])?,
+        tag(&[OBSERVER_OWNER_TAG, &owner_pubkey])?,
+        tag(&[OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY])?,
     ];
 
     Ok(EventBuilder::new(
@@ -1923,6 +1955,41 @@ mod tests {
             &ev,
             OBSERVER_AGENT_TAG,
             &agent.public_key().to_hex()
+        ));
+        assert!(has_tag(&ev, OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY));
+    }
+
+    #[test]
+    fn delegated_agent_observer_telemetry_carries_owner_and_recipient() {
+        let agent = keys();
+        let owner = keys();
+        let recipient = keys();
+        let encrypted = buzz_core::observer::encrypt_observer_payload(
+            &agent,
+            &recipient.public_key(),
+            &serde_json::json!({"type": "acp_read"}),
+        )
+        .unwrap();
+        let ev = sign(
+            build_delegated_agent_observer_telemetry_frame(
+                &recipient.public_key().to_hex(),
+                &agent.public_key().to_hex(),
+                &owner.public_key().to_hex(),
+                &encrypted,
+            )
+            .unwrap(),
+        );
+
+        assert!(has_tag(&ev, "p", &recipient.public_key().to_hex()));
+        assert!(has_tag(
+            &ev,
+            OBSERVER_AGENT_TAG,
+            &agent.public_key().to_hex()
+        ));
+        assert!(has_tag(
+            &ev,
+            OBSERVER_OWNER_TAG,
+            &owner.public_key().to_hex()
         ));
         assert!(has_tag(&ev, OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY));
     }

@@ -28,6 +28,10 @@ type HuddleIndicatorProps = {
   channelId: string;
   className?: string;
   renderMode?: "button" | "menu-item";
+  /** Distinguishes secondary placements from the channel-header controls. */
+  testIdPrefix?: string;
+  /** Uses voice-room wording when the control appears in the Discord sidebar. */
+  wording?: "huddle" | "voice-room";
   /** Called when the user clicks the button and no huddle is active (start). */
   onStart?: () => void;
   /** Whether the start action is disabled (e.g., permissions, already starting). */
@@ -43,6 +47,8 @@ export function HuddleIndicator({
   channelId,
   className,
   renderMode = "button",
+  testIdPrefix = "channel",
+  wording = "huddle",
   onStart,
   startDisabled,
 }: HuddleIndicatorProps) {
@@ -52,6 +58,13 @@ export function HuddleIndicator({
     null,
   );
   const [isJoining, setIsJoining] = React.useState(false);
+  const startLabel =
+    wording === "voice-room" ? "Start voice room" : "Start huddle";
+  const joinLabel =
+    wording === "voice-room" ? "Join voice room" : "Join huddle";
+  const tooltipLabel = wording === "voice-room" ? "Voice room" : "Huddle";
+  const startTriggerTestId = `${testIdPrefix}-start-huddle-trigger`;
+  const tooltipTriggerTestId = `${testIdPrefix}-huddle-tooltip-trigger`;
 
   React.useEffect(() => {
     if (!channelId) return;
@@ -215,12 +228,12 @@ export function HuddleIndicator({
       return (
         <DropdownMenuItem
           className={className}
-          data-testid="channel-start-huddle-trigger"
+          data-testid={startTriggerTestId}
           disabled={startDisabled || isStarting}
           onSelect={() => onStart()}
         >
           <Headphones />
-          <span>Start huddle</span>
+          <span>{startLabel}</span>
         </DropdownMenuItem>
       );
     }
@@ -228,14 +241,11 @@ export function HuddleIndicator({
     return (
       <Tooltip disableHoverableContent>
         <TooltipTrigger asChild>
-          <span
-            className="inline-flex"
-            data-testid="channel-huddle-tooltip-trigger"
-          >
+          <span className="inline-flex" data-testid={tooltipTriggerTestId}>
             <Button
-              aria-label="Start huddle"
+              aria-label={startLabel}
               className={className}
-              data-testid="channel-start-huddle-trigger"
+              data-testid={startTriggerTestId}
               disabled={startDisabled || isStarting}
               onClick={() => onStart()}
               size="icon"
@@ -246,7 +256,7 @@ export function HuddleIndicator({
             </Button>
           </span>
         </TooltipTrigger>
-        <TooltipContent>Huddle</TooltipContent>
+        <TooltipContent>{tooltipLabel}</TooltipContent>
       </Tooltip>
     );
   }
@@ -275,12 +285,12 @@ export function HuddleIndicator({
     return (
       <DropdownMenuItem
         className={className}
-        data-testid="channel-start-huddle-trigger"
+        data-testid={startTriggerTestId}
         disabled={isJoining || isStarting}
         onSelect={() => void doJoin()}
       >
         <Headphones />
-        <span>Join huddle</span>
+        <span>{joinLabel}</span>
         <span className="ml-auto text-xs text-muted-foreground">
           {participantCount}
         </span>
@@ -292,8 +302,13 @@ export function HuddleIndicator({
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          aria-label={`Join active huddle (${participantCount} participant${participantCount !== 1 ? "s" : ""})`}
+          aria-label={
+            wording === "voice-room"
+              ? `Join voice room (${participantCount} participant${participantCount !== 1 ? "s" : ""})`
+              : `Join active huddle (${participantCount} participant${participantCount !== 1 ? "s" : ""})`
+          }
           className={cn("relative", className)}
+          data-testid={startTriggerTestId}
           disabled={isJoining || isStarting}
           onClick={() => void doJoin()}
           size="icon"
@@ -311,7 +326,7 @@ export function HuddleIndicator({
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        {`Huddle active — ${participantCount} participant${participantCount !== 1 ? "s" : ""}`}
+        {`${tooltipLabel} active — ${participantCount} participant${participantCount !== 1 ? "s" : ""}`}
       </TooltipContent>
     </Tooltip>
   );

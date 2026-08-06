@@ -8,11 +8,12 @@ use tracing::{debug, error, info, warn};
 use buzz_core::event::StoredEvent;
 use buzz_core::kind::{
     event_kind_u32, is_ephemeral, is_unshared_gated_event, AUTHOR_ONLY_KINDS,
-    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_PRESENCE_UPDATE,
+    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_HOST_RPC_REQUEST, KIND_HOST_RPC_RESPONSE,
+    KIND_PRESENCE_UPDATE,
 };
 use buzz_core::observer::{
     content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
-    OBSERVER_FRAME_TELEMETRY,
+    OBSERVER_FRAME_TELEMETRY, OBSERVER_OWNER_TAG,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
@@ -791,6 +792,16 @@ async fn handle_ephemeral_event(
         }
     }
 
+    if matches!(
+        event_kind_u32(&event),
+        KIND_HOST_RPC_REQUEST | KIND_HOST_RPC_RESPONSE
+    ) {
+        if let Err(message) = validate_host_rpc_envelope(&event) {
+            conn.send(RelayMessage::ok(event_id_hex, false, message));
+            return;
+        }
+    }
+
     // Special handling for presence events (kind:20001).
     if event_kind_u32(&event) == KIND_PRESENCE_UPDATE {
         // Accept both bare strings ("online") and legacy JSON ({"status":"online"}).
@@ -896,6 +907,49 @@ async fn handle_ephemeral_event(
     conn.send(RelayMessage::ok(event_id_hex, true, ""));
 }
 
+fn validate_host_rpc_envelope(event: &Event) -> Result<(), &'static str> {
+    if !content_looks_like_nip44(&event.content) {
+        return Err("invalid: host RPC content must be NIP-44 ciphertext");
+    }
+    let p_tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|part| part == "p"))
+        .collect::<Vec<_>>();
+    if p_tags.len() != 1
+        || p_tags[0]
+            .as_slice()
+            .get(1)
+            .is_none_or(|value| PublicKey::from_hex(value).is_err())
+    {
+        return Err("invalid: host RPC must include exactly one valid p tag");
+    }
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().is_some_and(|part| part == "h"))
+    {
+        return Err("invalid: host RPC cannot be channel-scoped");
+    }
+    let e_tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|part| part == "e"))
+        .collect::<Vec<_>>();
+    if event_kind_u32(event) == KIND_HOST_RPC_REQUEST && !e_tags.is_empty() {
+        return Err("invalid: host RPC request cannot include an e tag");
+    }
+    if event_kind_u32(event) == KIND_HOST_RPC_RESPONSE
+        && (e_tags.len() != 1
+            || e_tags[0].as_slice().get(1).is_none_or(|value| {
+                value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }))
+    {
+        return Err("invalid: host RPC response must reference one request event");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentObserverDirection {
     Telemetry,
@@ -906,6 +960,7 @@ enum AgentObserverDirection {
 struct AgentObserverRoute {
     agent: PublicKey,
     owner: PublicKey,
+    recipient: PublicKey,
     direction: AgentObserverDirection,
 }
 
@@ -938,8 +993,10 @@ fn observer_frame_rate_limited(
 /// Handle encrypted agent observer frames (kind 24200).
 ///
 /// These frames bypass storage and are routed as global ephemeral events. The
-/// relay gates publication by the existing `agent_owner_pubkey` mapping and
-/// gates subscription in the REQ handler via the cleartext `p` tag.
+/// relay gates publication by the existing `agent_owner_pubkey` mapping. A
+/// telemetry frame may carry a separate `observer_owner` tag so an owner can
+/// delegate encrypted read access to another identity without delegating agent
+/// control. Subscriptions remain gated by the cleartext recipient `p` tag.
 async fn handle_agent_observer_event(
     event: Event,
     conn_id: uuid::Uuid,
@@ -1083,6 +1140,7 @@ async fn handle_agent_observer_event(
         event_id = %event_id_hex,
         agent = %route.agent.to_hex(),
         owner = %route.owner.to_hex(),
+        recipient = %route.recipient.to_hex(),
         direction = ?route.direction,
         "Agent observer fan-out"
     );
@@ -1101,8 +1159,9 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
     let frame = single_tag_content(event, OBSERVER_FRAME_TAG)?;
 
     let (owner, direction, expected_frame) = if event.pubkey == agent && recipient != agent {
+        let owner = optional_single_pubkey_tag(event, OBSERVER_OWNER_TAG)?.unwrap_or(recipient);
         (
-            recipient,
+            owner,
             AgentObserverDirection::Telemetry,
             OBSERVER_FRAME_TELEMETRY,
         )
@@ -1127,6 +1186,7 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
     Ok(Some(AgentObserverRoute {
         agent,
         owner,
+        recipient,
         direction,
     }))
 }
@@ -1134,6 +1194,25 @@ fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, Str
 fn parse_single_pubkey_tag(event: &Event, tag_name: &str) -> Result<PublicKey, String> {
     let value = single_tag_content(event, tag_name)?;
     PublicKey::from_hex(value)
+        .map_err(|_| format!("invalid: observer {tag_name} tag must be a hex pubkey"))
+}
+
+fn optional_single_pubkey_tag(event: &Event, tag_name: &str) -> Result<Option<PublicKey>, String> {
+    let mut values = event
+        .tags
+        .iter()
+        .filter(|tag| tag.kind().to_string() == tag_name)
+        .filter_map(|tag| tag.content());
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(format!(
+            "invalid: observer frame has multiple {tag_name} tags"
+        ));
+    }
+    PublicKey::from_hex(value)
+        .map(Some)
         .map_err(|_| format!("invalid: observer {tag_name} tag must be a hex pubkey"))
 }
 
@@ -1162,16 +1241,66 @@ mod tests {
 
     use buzz_core::kind::{
         KIND_AGENT_OBSERVER_FRAME, KIND_CANVAS, KIND_FORUM_COMMENT, KIND_FORUM_POST,
-        KIND_FORUM_VOTE, KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF,
+        KIND_FORUM_VOTE, KIND_HOST_RPC_REQUEST, KIND_HOST_RPC_RESPONSE, KIND_PRESENCE_UPDATE,
+        KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_DIFF,
     };
     use buzz_core::observer::{
         encrypt_observer_payload, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
-        OBSERVER_FRAME_TELEMETRY,
+        OBSERVER_FRAME_TELEMETRY, OBSERVER_OWNER_TAG,
     };
     use nostr::{EventBuilder, Keys, Kind, Tag};
     use tokio::sync::{mpsc, Mutex, RwLock};
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+
+    fn host_rpc_event(kind: u32, response_reference: bool) -> nostr::Event {
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let ciphertext = nostr::nips::nip44::encrypt(
+            sender.secret_key(),
+            &recipient.public_key(),
+            r#"{"requestId":"test"}"#,
+            nostr::nips::nip44::Version::V2,
+        )
+        .expect("encrypt");
+        let mut tags = vec![Tag::public_key(recipient.public_key())];
+        if response_reference {
+            tags.push(Tag::event(
+                EventBuilder::text_note("request")
+                    .sign_with_keys(&recipient)
+                    .expect("request")
+                    .id,
+            ));
+        }
+        EventBuilder::new(Kind::Custom(kind as u16), ciphertext)
+            .tags(tags)
+            .sign_with_keys(&sender)
+            .expect("host RPC event")
+    }
+
+    #[test]
+    fn host_rpc_envelope_requires_encrypted_single_recipient_routing() {
+        let request = host_rpc_event(KIND_HOST_RPC_REQUEST, false);
+        assert!(super::validate_host_rpc_envelope(&request).is_ok());
+
+        let response = host_rpc_event(KIND_HOST_RPC_RESPONSE, true);
+        assert!(super::validate_host_rpc_envelope(&response).is_ok());
+
+        let sender = Keys::generate();
+        let invalid = EventBuilder::new(Kind::Custom(KIND_HOST_RPC_REQUEST as u16), "plaintext")
+            .sign_with_keys(&sender)
+            .expect("invalid event");
+        assert_eq!(
+            super::validate_host_rpc_envelope(&invalid),
+            Err("invalid: host RPC content must be NIP-44 ciphertext")
+        );
+
+        let response_without_request = host_rpc_event(KIND_HOST_RPC_RESPONSE, false);
+        assert_eq!(
+            super::validate_host_rpc_envelope(&response_without_request),
+            Err("invalid: host RPC response must reference one request event")
+        );
+    }
 
     #[test]
     fn fanout_event_frame_matches_legacy_format_byte_for_byte() {
@@ -1262,6 +1391,38 @@ mod tests {
             .expect("route should be Some");
         assert_eq!(route.agent, agent.public_key());
         assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, owner.public_key());
+        assert_eq!(route.direction, super::AgentObserverDirection::Telemetry);
+    }
+
+    #[test]
+    fn agent_observer_route_accepts_delegated_telemetry_recipient() {
+        let agent = Keys::generate();
+        let owner = Keys::generate();
+        let recipient = Keys::generate();
+        let encrypted = encrypt_observer_payload(
+            &agent,
+            &recipient.public_key(),
+            &serde_json::json!({"type": "acp_read"}),
+        )
+        .expect("encrypt observer payload");
+        let event = EventBuilder::new(Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16), encrypted)
+            .tags([
+                Tag::parse(["p", &recipient.public_key().to_hex()]).expect("p tag"),
+                Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+                Tag::parse([OBSERVER_OWNER_TAG, &owner.public_key().to_hex()])
+                    .expect("observer owner tag"),
+                Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
+            ])
+            .sign_with_keys(&agent)
+            .expect("sign event");
+
+        let route = super::agent_observer_route(&event)
+            .expect("observer route")
+            .expect("route should be Some");
+        assert_eq!(route.agent, agent.public_key());
+        assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, recipient.public_key());
         assert_eq!(route.direction, super::AgentObserverDirection::Telemetry);
     }
 
@@ -1289,6 +1450,7 @@ mod tests {
             .expect("route should be Some");
         assert_eq!(route.agent, agent.public_key());
         assert_eq!(route.owner, owner.public_key());
+        assert_eq!(route.recipient, agent.public_key());
         assert_eq!(route.direction, super::AgentObserverDirection::Control);
     }
 

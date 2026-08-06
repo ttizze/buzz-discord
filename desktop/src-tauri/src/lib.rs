@@ -181,7 +181,7 @@ pub fn run() {
             }
             // Forward any deep link URLs from the duplicate launch.
             for arg in &argv {
-                if arg.starts_with("buzz://") {
+                if arg.starts_with("buzzcord://") || arg.starts_with("buzz://") {
                     handle_deep_link_url(app, arg);
                 }
             }
@@ -371,6 +371,7 @@ pub fn run() {
         .manage(BuilderlabSession::default())
         .manage(BuilderlabLogin::default())
         .manage(commands::pairing::PairingHandle::new())
+        .manage(commands::HostPairingHandle::new())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             #[cfg(target_os = "macos")]
@@ -691,6 +692,8 @@ pub fn run() {
             get_project_local_repo_snapshot,
             get_project_repo_sync_status,
             list_project_local_repositories,
+            pick_project_folder,
+            get_computer_identity,
             clone_project_repository,
             create_project_remote_branch,
             delete_project_remote_branch,
@@ -788,6 +791,11 @@ pub fn run() {
             get_relay_self,
             resolve_oa_owner,
             list_relay_agents,
+            list_paired_computers,
+            start_host_pairing,
+            confirm_host_pairing_sas,
+            cancel_host_pairing,
+            list_remote_host_directory,
             list_managed_agents,
             list_managed_agent_runtimes,
             start_managed_agent_runtime,

@@ -57,12 +57,12 @@ test("parseInviteInput_https_url_encoded_code_decoded", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buzz://join deep link URLs
+// buzzcord://join deep link URLs (legacy buzz:// remains accepted)
 // ---------------------------------------------------------------------------
 
 test("parseInviteInput_buzz_join_with_wss_relay_returns_relay_and_code", () => {
   const result = parseInviteInput(
-    "buzz://join?relay=wss://relay.example.com&code=abc123",
+    "buzzcord://join?relay=wss://relay.example.com&code=abc123",
   );
   assert.deepEqual(result, {
     relayWsUrl: "wss://relay.example.com",
@@ -72,7 +72,7 @@ test("parseInviteInput_buzz_join_with_wss_relay_returns_relay_and_code", () => {
 
 test("parseInviteInput_buzz_join_with_ws_relay_returns_relay_and_code", () => {
   const result = parseInviteInput(
-    "buzz://join?relay=ws://localhost:3000&code=testcode",
+    "buzzcord://join?relay=ws://localhost:3000&code=testcode",
   );
   assert.deepEqual(result, {
     relayWsUrl: "ws://localhost:3000",
@@ -82,7 +82,7 @@ test("parseInviteInput_buzz_join_with_ws_relay_returns_relay_and_code", () => {
 
 test("parseInviteInput_buzz_join_with_encoded_relay_param", () => {
   const result = parseInviteInput(
-    "buzz://join?relay=wss%3A%2F%2Frelay.example.com&code=abc123",
+    "buzzcord://join?relay=wss%3A%2F%2Frelay.example.com&code=abc123",
   );
   assert.deepEqual(result, {
     relayWsUrl: "wss://relay.example.com",

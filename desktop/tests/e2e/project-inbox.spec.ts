@@ -4,7 +4,7 @@ import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
-const BUZZ_REPO_ADDRESS = `30617:${DEFAULT_MOCK_PUBKEY}:buzz`;
+const BUZZ_REPO_ADDRESS = `30623:${DEFAULT_MOCK_PUBKEY}:buzz`;
 
 test("Buzz Git pull request renders and stays actionable in Inbox", async ({
   page,
@@ -20,7 +20,7 @@ test("Buzz Git pull request renders and stays actionable in Inbox", async ({
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("button", { name: /^Repositories/ }).click();
   await page
     .locator(
       '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',

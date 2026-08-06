@@ -281,7 +281,7 @@ test("channel context menu only shows owner actions to the owner", async ({
 test("channel context menu explains when owner actions are loading", async ({
   page,
 }) => {
-  await installMockBridge(page, { channelMembersReadDelayMs: 500 });
+  await installMockBridge(page, { channelMembersReadDelayMs: 5_000 });
   await page.goto("/");
 
   await page.getByTestId("channel-general").click({ button: "right" });
@@ -398,31 +398,33 @@ for (const theme of ["buzz", "github-light", "catppuccin-mocha"]) {
   });
 }
 
-test("aligns the sidebar search with the channel title outside the Buzz theme", async ({
+test("aligns the Discord server header with the channel title outside the Buzz theme", async ({
   page,
 }) => {
   await loadTheme(page, "github-light");
   await page.getByTestId("channel-general").click();
 
   const root = page.locator("html");
-  const search = page.getByTestId("open-search");
-  const channelTitle = page.getByTestId("chat-title");
+  const serverHeader = page.getByTestId("discord-community-header");
+  const channelHeader = page.getByTestId("chat-header");
   await expect(root).not.toHaveAttribute("data-buzz-sidebar", "");
-  await expect(search).toBeVisible();
-  await expect(channelTitle).toHaveText("general");
+  await expect(serverHeader).toBeVisible();
+  await expect(channelHeader.getByTestId("chat-title")).toHaveText("general");
 
-  const [searchBox, channelTitleBox] = await Promise.all([
-    search.boundingBox(),
-    channelTitle.boundingBox(),
+  const [serverHeaderBox, channelHeaderBox] = await Promise.all([
+    serverHeader.boundingBox(),
+    channelHeader.boundingBox(),
   ]);
-  expect(searchBox).not.toBeNull();
-  expect(channelTitleBox).not.toBeNull();
+  expect(serverHeaderBox).not.toBeNull();
+  expect(channelHeaderBox).not.toBeNull();
 
-  if (!searchBox || !channelTitleBox) return;
+  if (!serverHeaderBox || !channelHeaderBox) return;
 
-  const searchCenter = searchBox.y + searchBox.height / 2;
-  const channelTitleCenter = channelTitleBox.y + channelTitleBox.height / 2;
-  expect(Math.abs(searchCenter - channelTitleCenter)).toBeLessThanOrEqual(2);
+  const serverHeaderCenter = serverHeaderBox.y + serverHeaderBox.height / 2;
+  const channelHeaderCenter = channelHeaderBox.y + channelHeaderBox.height / 2;
+  expect(
+    Math.abs(serverHeaderCenter - channelHeaderCenter),
+  ).toBeLessThanOrEqual(2);
 });
 
 test("sidebar rail resizes without toggling the sidebar", async ({ page }) => {
